@@ -53,8 +53,8 @@ async function fetchBias(retries = 3) {
   }
 }
 
-// Run fetch every 60 minutes
-setInterval(fetchBias, 60 * 60 * 1000);
+// Run fetch every 5 minutes
+setInterval(fetchBias, 5 * 60 * 1000);
 fetchBias();
 
 // ===== ADMIN ENDPOINT =====
@@ -144,9 +144,19 @@ You are TradeGuide, a trading assistant.
   }
 });
 
-// ===== TELEGRAM BOT =====
+// ===== TELEGRAM BOT (WEBHOOK MODE) =====
 if (process.env.TELEGRAM_BOT_TOKEN) {
-  const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+  const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN);
+
+  // Set webhook to Render external URL
+  const webhookUrl = `${process.env.RENDER_EXTERNAL_URL}/bot${process.env.TELEGRAM_BOT_TOKEN}`;
+  bot.setWebHook(webhookUrl);
+
+  // Endpoint for Telegram to send updates
+  app.post(`/bot${process.env.TELEGRAM_BOT_TOKEN}`, (req, res) => {
+    bot.processUpdate(req.body);
+    res.sendStatus(200);
+  });
 
   bot.on("message", async (msg) => {
     const chatId = msg.chat.id;
@@ -165,12 +175,12 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
     }
 
     try {
-      const res = await fetch(`http://localhost:${PORT}/chat`, {
+      const resApi = await fetch(`${process.env.RENDER_INTERNAL_URL || "http://localhost:" + PORT}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ asset, question }),
       });
-      const data = await res.json();
+      const data = await resApi.json();
 
       if (data.error) {
         return bot.sendMessage(chatId, `⚠️ ${data.error}`);
@@ -192,7 +202,7 @@ if (process.env.TELEGRAM_BOT_TOKEN) {
     }
   });
 
-  console.log("✅ Telegram bot started");
+  console.log("✅ Telegram bot running in webhook mode");
 }
 
 // ===== START SERVER =====
