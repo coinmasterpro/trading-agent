@@ -81,7 +81,7 @@ You are TradeGuide, a trading assistant.
 
   try {
     const completion = await groq.chat.completions.create({
-      model: "llama3-8b-8192",
+      model: "llama-3.1-8b-instant",
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: `Question: ${question}\nAsset: ${asset}\nBias: ${bias}` }
@@ -192,3 +192,4 @@ bot.on("message", async (msg) => {
 // ====== START SERVER ======
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Agent + Bot running on port ${PORT}`));
+
