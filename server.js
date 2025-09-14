@@ -9,10 +9,10 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-// ===== GROQ CLIENT =====
+// ====== Groq Client ======
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-// ===== BIAS STORE =====
+// ====== Bias Store ======
 let biasStore = { BTC: "neutral", SPX: "neutral", XAU: "neutral", XAG: "neutral" };
 
 // Allowed question types
@@ -23,14 +23,14 @@ const allowedQuestions = [
   "risk management"
 ];
 
-// ignores SSL verification
+// ====== Ignore SSL (for scraping) ======
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-// ===== FETCH BIAS FROM WEBSITE =====
+// ====== Fetch BTC/SPX bias from external site ======
 async function fetchBias(retries = 3) {
   try {
     const res = await fetch("https://www.swing-trade-crypto.site/premium_access", {
-      agent: httpsAgent,
+      agent: httpsAgent
     });
     const html = await res.text();
 
@@ -42,7 +42,7 @@ async function fetchBias(retries = 3) {
       biasStore.BTC = "neutral";
     }
 
-    biasStore.SPX = biasStore.BTC; // Mirror for now
+    biasStore.SPX = biasStore.BTC; // Mirror BTC for now
     console.log("Bias updated:", biasStore);
   } catch (err) {
     console.error("Error fetching bias:", err);
@@ -57,7 +57,7 @@ async function fetchBias(retries = 3) {
 setInterval(fetchBias, 5 * 60 * 1000);
 fetchBias();
 
-// ===== ADMIN ENDPOINT =====
+// ====== ADMIN ENDPOINT ======
 app.post("/admin/set-bias", (req, res) => {
   const { password, asset, bias } = req.body;
 
@@ -79,26 +79,25 @@ app.post("/admin/set-bias", (req, res) => {
   res.json({ success: true, asset, bias });
 });
 
-// ===== BIAS ENDPOINT =====
+// ====== BIAS ENDPOINT ======
 app.get("/bias", (req, res) => {
   res.json(biasStore);
 });
 
-// ===== CHAT ENDPOINT =====
+// ====== CHAT ENDPOINT ======
 app.post("/chat", async (req, res) => {
   const { asset, question } = req.body;
 
   const allowedAssets = ["BTC", "SPX", "XAU", "XAG"];
   if (!allowedAssets.includes(asset)) {
     return res.json({
-      error:
-        "I can't assist with that asset—this system only covers BTC, SPX, XAU, and XAG.",
+      error: "I can't assist with that asset—this system only covers BTC, SPX, XAU, and XAG."
     });
   }
 
-  if (!allowedQuestions.some((q) => question.toLowerCase().includes(q))) {
+  if (!allowedQuestions.some(q => question.toLowerCase().includes(q))) {
     return res.json({
-      error: `I can only answer questions about: ${allowedQuestions.join(", ")}`,
+      error: `I can only answer questions about: ${allowedQuestions.join(", ")}`
     });
   }
 
@@ -115,96 +114,93 @@ You are TradeGuide, a trading assistant.
 
   try {
     const completion = await groq.chat.completions.create({
-      model: "llama3-70b-8192",
+      model: "llama3-8b-8192",
       messages: [
         { role: "system", content: systemPrompt },
-        { role: "user", content: `Question: ${question}\nAsset: ${asset}\nBias: ${bias}` },
+        { role: "user", content: `Question: ${question}\nAsset: ${asset}\nBias: ${bias}` }
       ],
       temperature: 0.3,
-      max_tokens: 300,
+      max_tokens: 300
     });
 
-    const rawReply = completion.choices[0].message.content;
-
-    let parsedReply;
-    try {
-      parsedReply = JSON.parse(rawReply);
-    } catch (e) {
-      console.error("⚠️ JSON parse failed, returning raw:", rawReply);
-      parsedReply = { raw: rawReply };
-    }
-
-    res.json({ asset, bias, reply: parsedReply });
+    const reply = completion.choices[0].message.content;
+    res.json({ asset, bias, reply: JSON.parse(reply) });
   } catch (err) {
-    console.error("❌ LLM error details:", err.response?.data || err.message || err);
-    res.status(500).json({
-      error: "LLM error",
-      details: err.response?.data || err.message,
-    });
+    console.error("Groq LLM error:", err);
+    res.status(500).json({ error: "LLM error" });
   }
 });
 
-// ===== TELEGRAM BOT (WEBHOOK MODE) =====
-if (process.env.TELEGRAM_BOT_TOKEN) {
-  const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN);
+// ====== TELEGRAM BOT ======
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
-  // Set webhook to Render external URL
-  const webhookUrl = `${process.env.RENDER_EXTERNAL_URL}/bot${process.env.TELEGRAM_BOT_TOKEN}`;
-  bot.setWebHook(webhookUrl);
+// /start command
+bot.onText(/\/start/, (msg) => {
+  const chatId = msg.chat.id;
+  bot.sendMessage(
+    chatId,
+    `👋 Welcome to *TradeGuide Bot*!\n\n` +
+      `I can help you with trading insights for:\n` +
+      `- BTC\n- SPX\n- XAU (Gold)\n- XAG (Silver)\n\n` +
+      `You can ask about:\n` +
+      `- Market trend\n- Entry strategy\n- Exit strategy\n- Risk management\n\n` +
+      `Example: *BTC market trend*`,
+    { parse_mode: "Markdown" }
+  );
+});
 
-  // Endpoint for Telegram to send updates
-  app.post(`/bot${process.env.TELEGRAM_BOT_TOKEN}`, (req, res) => {
-    bot.processUpdate(req.body);
-    res.sendStatus(200);
-  });
+// Catch-all for trading questions
+bot.on("message", async (msg) => {
+  const chatId = msg.chat.id;
+  const text = msg.text?.trim();
 
-  bot.on("message", async (msg) => {
-    const chatId = msg.chat.id;
-    const text = msg.text || "";
+  // Skip /start (already handled)
+  if (!text || text.startsWith("/start")) return;
 
-    const [assetInput, ...questionParts] = text.split(" ");
-    const asset = assetInput?.toUpperCase();
-    const question = questionParts.join(" ");
+  const allowedAssets = ["BTC", "SPX", "XAU", "XAG"];
+  const asset = allowedAssets.find((a) => text.toUpperCase().includes(a));
+  if (!asset) {
+    return bot.sendMessage(chatId, "❌ I can only help with BTC, SPX, XAU, or XAG.");
+  }
 
-    const allowedAssets = ["BTC", "SPX", "XAU", "XAG"];
-    if (!allowedAssets.includes(asset)) {
-      return bot.sendMessage(
-        chatId,
-        "❌ I can only help with BTC, SPX, XAU, or XAG."
-      );
+  const question = allowedQuestions.find((q) => text.toLowerCase().includes(q));
+  if (!question) {
+    return bot.sendMessage(
+      chatId,
+      `❌ I can only answer questions about:\n${allowedQuestions.join(", ")}`
+    );
+  }
+
+  try {
+    const response = await fetch(`${process.env.SERVER_URL}/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ asset, question })
+    });
+
+    const data = await response.json();
+    if (data.error) {
+      return bot.sendMessage(chatId, `⚠️ Error: ${data.error}`);
     }
 
-    try {
-      const resApi = await fetch(`${process.env.RENDER_INTERNAL_URL || "http://localhost:" + PORT}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ asset, question }),
-      });
-      const data = await resApi.json();
+    const advice = data.reply.advice || "No advice generated.";
+    const risk = data.reply.risk || "No risk notes.";
+    const disclaimer = data.reply.disclaimer || "";
 
-      if (data.error) {
-        return bot.sendMessage(chatId, `⚠️ ${data.error}`);
-      }
+    bot.sendMessage(
+      chatId,
+      `📊 *${asset} — ${question}*\n\n` +
+        `💡 Advice: ${advice}\n\n` +
+        `⚠️ Risk: ${risk}\n\n` +
+        `_${disclaimer}_`,
+      { parse_mode: "Markdown" }
+    );
+  } catch (err) {
+    console.error("Bot error:", err);
+    bot.sendMessage(chatId, "❌ Sorry, something went wrong while fetching advice.");
+  }
+});
 
-      const reply =
-        data.reply.advice ||
-        data.reply.raw ||
-        JSON.stringify(data.reply, null, 2);
-
-      bot.sendMessage(
-        chatId,
-        `📊 *${asset}* (Bias: ${data.bias})\n\n${reply}`,
-        { parse_mode: "Markdown" }
-      );
-    } catch (e) {
-      console.error("Telegram bot error:", e);
-      bot.sendMessage(chatId, "❌ Error fetching advice.");
-    }
-  });
-
-  console.log("✅ Telegram bot running in webhook mode");
-}
-
-// ===== START SERVER =====
+// ====== START SERVER ======
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Agent running on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ Agent + Bot running on port ${PORT}`));
