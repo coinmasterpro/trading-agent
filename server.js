@@ -12,6 +12,11 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 // Bias store
 let biasStore = { BTC: "neutral", SPX: "neutral", XAU: "neutral", XAG: "neutral" };
 
+// ignores SSL verification
+const httpsAgent = new https.Agent({
+  rejectUnauthorized: false, // ⚠️ disables SSL verification
+});
+
 // Fetch BTC/SPX bias from website
 async function fetchBias() {
   try {
@@ -103,3 +108,4 @@ Answer concisely.
 });
 
 app.listen(3000, () => console.log("Agent running on http://localhost:3000"));
+
