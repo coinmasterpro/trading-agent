@@ -3,6 +3,7 @@ import fetch from "node-fetch";
 import Groq from "groq-sdk";
 import dotenv from "dotenv";
 import https from "https";
+import TelegramBot from "node-telegram-bot-api";
 
 dotenv.config();
 const app = express();
@@ -53,8 +54,8 @@ async function fetchBias(retries = 3) {
   }
 }
 
-// Run fetch every 5 minutes
-setInterval(fetchBias, 5 * 60 * 1000);
+// Run fetch every 60 minutes
+setInterval(fetchBias, 60 * 60 * 1000);
 fetchBias();
 
 // ===== ADMIN ENDPOINT =====
@@ -134,3 +135,34 @@ You are TradeGuide, a trading assistant.
 // ===== START SERVER =====
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Agent running on port ${PORT}`));
+
+// ===== TELEGRAM BOT =====
+const token = process.env.TELEGRAM_BOT_TOKEN;
+if (token) {
+  const bot = new TelegramBot(token, { polling: true });
+  console.log("✅ Telegram bot started inside server.js");
+
+  bot.on("message", async (msg) => {
+    const chatId = msg.chat.id;
+    const [asset, ...qParts] = msg.text.trim().split(" ");
+    const question = qParts.join(" ");
+
+    if (!asset || !question) {
+      return bot.sendMessage(chatId, "Format: <ASSET> <question>\nExample: BTC entry strategy");
+    }
+
+    try {
+      const response = await fetch(`http://localhost:${PORT}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ asset, question })
+      });
+
+      const data = await response.json();
+      bot.sendMessage(chatId, JSON.stringify(data, null, 2));
+    } catch (err) {
+      console.error("Bot error:", err);
+      bot.sendMessage(chatId, "Backend error, try again later.");
+    }
+  });
+}
