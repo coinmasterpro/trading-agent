@@ -57,48 +57,15 @@ async function fetchBias(retries = 3) {
 setInterval(fetchBias, 5 * 60 * 1000);
 fetchBias();
 
-// ====== ADMIN ENDPOINT ======
-app.post("/admin/set-bias", (req, res) => {
-  const { password, asset, bias } = req.body;
-
-  if (password !== process.env.ADMIN_PASSWORD) {
-    return res.status(403).json({ error: "Unauthorized" });
-  }
-
-  const allowed = ["XAU", "XAG"];
-  if (!allowed.includes(asset)) {
-    return res.status(400).json({ error: "Only XAU and XAG can be set manually" });
-  }
-
-  if (!["bullish", "bearish", "neutral"].includes(bias)) {
-    return res.status(400).json({ error: "Bias must be bullish, bearish, or neutral" });
-  }
-
-  biasStore[asset] = bias;
-  console.log(`Admin override: ${asset} set to ${bias}`);
-  res.json({ success: true, asset, bias });
-});
-
-// ====== BIAS ENDPOINT ======
-app.get("/bias", (req, res) => {
-  res.json(biasStore);
-});
-
-// ====== CHAT ENDPOINT ======
-app.post("/chat", async (req, res) => {
-  const { asset, question } = req.body;
-
+// ====== CORE CHAT LOGIC ======
+async function handleChat(asset, question) {
   const allowedAssets = ["BTC", "SPX", "XAU", "XAG"];
   if (!allowedAssets.includes(asset)) {
-    return res.json({
-      error: "I can't assist with that asset—this system only covers BTC, SPX, XAU, and XAG."
-    });
+    return { error: "I can't assist with that asset—this system only covers BTC, SPX, XAU, and XAG." };
   }
 
   if (!allowedQuestions.some(q => question.toLowerCase().includes(q))) {
-    return res.json({
-      error: `I can only answer questions about: ${allowedQuestions.join(", ")}`
-    });
+    return { error: `I can only answer questions about: ${allowedQuestions.join(", ")}` };
   }
 
   const bias = biasStore[asset] || "neutral";
@@ -124,11 +91,43 @@ You are TradeGuide, a trading assistant.
     });
 
     const reply = completion.choices[0].message.content;
-    res.json({ asset, bias, reply: JSON.parse(reply) });
+    return { asset, bias, reply: JSON.parse(reply) };
   } catch (err) {
     console.error("Groq LLM error:", err);
-    res.status(500).json({ error: "LLM error" });
+    return { error: "LLM error" };
   }
+}
+
+// ====== EXPRESS ENDPOINTS ======
+app.post("/admin/set-bias", (req, res) => {
+  const { password, asset, bias } = req.body;
+
+  if (password !== process.env.ADMIN_PASSWORD) {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
+
+  const allowed = ["XAU", "XAG"];
+  if (!allowed.includes(asset)) {
+    return res.status(400).json({ error: "Only XAU and XAG can be set manually" });
+  }
+
+  if (!["bullish", "bearish", "neutral"].includes(bias)) {
+    return res.status(400).json({ error: "Bias must be bullish, bearish, or neutral" });
+  }
+
+  biasStore[asset] = bias;
+  console.log(`Admin override: ${asset} set to ${bias}`);
+  res.json({ success: true, asset, bias });
+});
+
+app.get("/bias", (req, res) => {
+  res.json(biasStore);
+});
+
+app.post("/chat", async (req, res) => {
+  const { asset, question } = req.body;
+  const result = await handleChat(asset, question);
+  res.json(result);
 });
 
 // ====== TELEGRAM BOT ======
@@ -154,7 +153,6 @@ bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text?.trim();
 
-  // Skip /start (already handled)
   if (!text || text.startsWith("/start")) return;
 
   const allowedAssets = ["BTC", "SPX", "XAU", "XAG"];
@@ -171,34 +169,24 @@ bot.on("message", async (msg) => {
     );
   }
 
-  try {
-    const response = await fetch(`${process.env.SERVER_URL}/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ asset, question })
-    });
+  const result = await handleChat(asset, question);
 
-    const data = await response.json();
-    if (data.error) {
-      return bot.sendMessage(chatId, `⚠️ Error: ${data.error}`);
-    }
-
-    const advice = data.reply.advice || "No advice generated.";
-    const risk = data.reply.risk || "No risk notes.";
-    const disclaimer = data.reply.disclaimer || "";
-
-    bot.sendMessage(
-      chatId,
-      `📊 *${asset} — ${question}*\n\n` +
-        `💡 Advice: ${advice}\n\n` +
-        `⚠️ Risk: ${risk}\n\n` +
-        `_${disclaimer}_`,
-      { parse_mode: "Markdown" }
-    );
-  } catch (err) {
-    console.error("Bot error:", err);
-    bot.sendMessage(chatId, "❌ Sorry, something went wrong while fetching advice.");
+  if (result.error) {
+    return bot.sendMessage(chatId, `⚠️ Error: ${result.error}`);
   }
+
+  const advice = result.reply.advice || "No advice generated.";
+  const risk = result.reply.risk || "No risk notes.";
+  const disclaimer = result.reply.disclaimer || "";
+
+  bot.sendMessage(
+    chatId,
+    `📊 *${asset} — ${question}*\n\n` +
+      `💡 Advice: ${advice}\n\n` +
+      `⚠️ Risk: ${risk}\n\n` +
+      `_${disclaimer}_`,
+    { parse_mode: "Markdown" }
+  );
 });
 
 // ====== START SERVER ======
