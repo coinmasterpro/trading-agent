@@ -2,6 +2,7 @@ import express from "express";
 import fetch from "node-fetch";
 import Groq from "groq-sdk";
 import dotenv from "dotenv";
+import https from "https";
 
 dotenv.config();
 const app = express();
@@ -20,7 +21,9 @@ const httpsAgent = new https.Agent({
 // Fetch BTC/SPX bias from website
 async function fetchBias() {
   try {
-    const res = await fetch("https://www.swing-trade-crypto.site/premium_access");
+    const res = await fetch("https://www.swing-trade-crypto.site/premium_access", {
+      agent: httpsAgent
+    });
     const html = await res.text();
 
     if (html.includes("Last Signal: BUY")) {
@@ -108,4 +111,3 @@ Answer concisely.
 });
 
 app.listen(3000, () => console.log("Agent running on http://localhost:3000"));
-
