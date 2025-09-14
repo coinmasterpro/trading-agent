@@ -53,8 +53,8 @@ async function fetchBias(retries = 3) {
   }
 }
 
-// Run fetch every 5 minutes
-setInterval(fetchBias, 5 * 60 * 1000);
+// Run fetch every 60 minutes
+setInterval(fetchBias, 60 * 60 * 1000);
 fetchBias();
 
 // ====== CORE CHAT LOGIC ======
@@ -192,4 +192,5 @@ bot.on("message", async (msg) => {
 // ====== START SERVER ======
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Agent + Bot running on port ${PORT}`));
+
 
