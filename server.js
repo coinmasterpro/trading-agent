@@ -26,9 +26,9 @@ async function fetchBias() {
     });
     const html = await res.text();
 
-    if (html.includes("Last Signal: BUY")) {
+    if (html.includes("Current Signal: BUY")) {
       biasStore.BTC = "bullish";
-    } else if (html.includes("Last Signal: SELL")) {
+    } else if (html.includes("Current Signal: SELL")) {
       biasStore.BTC = "bearish";
     } else {
       biasStore.BTC = "neutral";
@@ -111,3 +111,4 @@ Answer concisely.
 });
 
 app.listen(3000, () => console.log("Agent running on http://localhost:3000"));
+
