@@ -9,9 +9,10 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
+// ===== GROQ CLIENT =====
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-// Bias store
+// ===== BIAS STORE =====
 let biasStore = { BTC: "neutral", SPX: "neutral", XAU: "neutral", XAG: "neutral" };
 
 // Allowed question types
@@ -23,15 +24,13 @@ const allowedQuestions = [
 ];
 
 // ignores SSL verification
-const httpsAgent = new https.Agent({
-  rejectUnauthorized: false,
-});
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
-// Fetch BTC/SPX bias from website
+// ===== FETCH BIAS FROM WEBSITE =====
 async function fetchBias(retries = 3) {
   try {
     const res = await fetch("https://www.swing-trade-crypto.site/premium_access", {
-      agent: httpsAgent
+      agent: httpsAgent,
     });
     const html = await res.text();
 
@@ -92,13 +91,14 @@ app.post("/chat", async (req, res) => {
   const allowedAssets = ["BTC", "SPX", "XAU", "XAG"];
   if (!allowedAssets.includes(asset)) {
     return res.json({
-      error: "I can't assist with that asset—this system only covers BTC, SPX, XAU, and XAG."
+      error:
+        "I can't assist with that asset—this system only covers BTC, SPX, XAU, and XAG.",
     });
   }
 
-  if (!allowedQuestions.some(q => question.toLowerCase().includes(q))) {
+  if (!allowedQuestions.some((q) => question.toLowerCase().includes(q))) {
     return res.json({
-      error: `I can only answer questions about: ${allowedQuestions.join(", ")}`
+      error: `I can only answer questions about: ${allowedQuestions.join(", ")}`,
     });
   }
 
@@ -115,54 +115,86 @@ You are TradeGuide, a trading assistant.
 
   try {
     const completion = await groq.chat.completions.create({
-      model: "llama3-8b-8192",
+      model: "llama3-70b-8192",
       messages: [
         { role: "system", content: systemPrompt },
-        { role: "user", content: `Question: ${question}\nAsset: ${asset}\nBias: ${bias}` }
+        { role: "user", content: `Question: ${question}\nAsset: ${asset}\nBias: ${bias}` },
       ],
       temperature: 0.3,
-      max_tokens: 300
+      max_tokens: 300,
     });
 
-    const reply = completion.choices[0].message.content;
-    res.json({ asset, bias, reply: JSON.parse(reply) });
+    const rawReply = completion.choices[0].message.content;
+
+    let parsedReply;
+    try {
+      parsedReply = JSON.parse(rawReply);
+    } catch (e) {
+      console.error("⚠️ JSON parse failed, returning raw:", rawReply);
+      parsedReply = { raw: rawReply };
+    }
+
+    res.json({ asset, bias, reply: parsedReply });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "LLM error" });
+    console.error("❌ LLM error details:", err.response?.data || err.message || err);
+    res.status(500).json({
+      error: "LLM error",
+      details: err.response?.data || err.message,
+    });
   }
 });
+
+// ===== TELEGRAM BOT =====
+if (process.env.TELEGRAM_BOT_TOKEN) {
+  const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+
+  bot.on("message", async (msg) => {
+    const chatId = msg.chat.id;
+    const text = msg.text || "";
+
+    const [assetInput, ...questionParts] = text.split(" ");
+    const asset = assetInput?.toUpperCase();
+    const question = questionParts.join(" ");
+
+    const allowedAssets = ["BTC", "SPX", "XAU", "XAG"];
+    if (!allowedAssets.includes(asset)) {
+      return bot.sendMessage(
+        chatId,
+        "❌ I can only help with BTC, SPX, XAU, or XAG."
+      );
+    }
+
+    try {
+      const res = await fetch(`http://localhost:${PORT}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ asset, question }),
+      });
+      const data = await res.json();
+
+      if (data.error) {
+        return bot.sendMessage(chatId, `⚠️ ${data.error}`);
+      }
+
+      const reply =
+        data.reply.advice ||
+        data.reply.raw ||
+        JSON.stringify(data.reply, null, 2);
+
+      bot.sendMessage(
+        chatId,
+        `📊 *${asset}* (Bias: ${data.bias})\n\n${reply}`,
+        { parse_mode: "Markdown" }
+      );
+    } catch (e) {
+      console.error("Telegram bot error:", e);
+      bot.sendMessage(chatId, "❌ Error fetching advice.");
+    }
+  });
+
+  console.log("✅ Telegram bot started");
+}
 
 // ===== START SERVER =====
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Agent running on port ${PORT}`));
-
-// ===== TELEGRAM BOT =====
-const token = process.env.TELEGRAM_BOT_TOKEN;
-if (token) {
-  const bot = new TelegramBot(token, { polling: true });
-  console.log("✅ Telegram bot started inside server.js");
-
-  bot.on("message", async (msg) => {
-    const chatId = msg.chat.id;
-    const [asset, ...qParts] = msg.text.trim().split(" ");
-    const question = qParts.join(" ");
-
-    if (!asset || !question) {
-      return bot.sendMessage(chatId, "Format: <ASSET> <question>\nExample: BTC entry strategy");
-    }
-
-    try {
-      const response = await fetch(`http://localhost:${PORT}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ asset, question })
-      });
-
-      const data = await response.json();
-      bot.sendMessage(chatId, JSON.stringify(data, null, 2));
-    } catch (err) {
-      console.error("Bot error:", err);
-      bot.sendMessage(chatId, "Backend error, try again later.");
-    }
-  });
-}
