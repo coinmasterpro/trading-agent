@@ -1,6 +1,6 @@
 import express from "express";
 import fetch from "node-fetch";
-import Groq from "groq-sdk";
+import { Groq } from "groq-typescript";
 import dotenv from "dotenv";
 import https from "https";
 
@@ -8,6 +8,7 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
+// Initialize Groq client
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 // Bias store
@@ -21,10 +22,8 @@ const allowedQuestions = [
   "risk management"
 ];
 
-// ignores SSL verification
-const httpsAgent = new https.Agent({
-  rejectUnauthorized: false,
-});
+// Ignore SSL verification (for your bias source)
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 // Fetch BTC/SPX bias from website
 async function fetchBias(retries = 3) {
@@ -42,7 +41,7 @@ async function fetchBias(retries = 3) {
       biasStore.BTC = "neutral";
     }
 
-    biasStore.SPX = biasStore.BTC; // Mirror for now
+    biasStore.SPX = biasStore.BTC; // Mirror SPX for now
     console.log("Bias updated:", biasStore);
   } catch (err) {
     console.error("Error fetching bias:", err);
