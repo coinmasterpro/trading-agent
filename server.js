@@ -1,6 +1,6 @@
 import express from "express";
 import fetch from "node-fetch";
-import { Groq } from "groq-typescript";
+import Groq from "groq-sdk";
 import dotenv from "dotenv";
 import https from "https";
 
@@ -8,25 +8,18 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-// Initialize Groq client
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 // Bias store
 let biasStore = { BTC: "neutral", SPX: "neutral", XAU: "neutral", XAG: "neutral" };
 
-// Allowed question types
-const allowedQuestions = [
-  "market trend",
-  "entry strategy",
-  "exit strategy",
-  "risk management"
-];
-
-// Ignore SSL verification (for your bias source)
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+// ignores SSL verification
+const httpsAgent = new https.Agent({
+  rejectUnauthorized: false, // ⚠️ disables SSL verification
+});
 
 // Fetch BTC/SPX bias from website
-async function fetchBias(retries = 3) {
+async function fetchBias() {
   try {
     const res = await fetch("https://www.swing-trade-crypto.site/premium_access", {
       agent: httpsAgent
@@ -41,18 +34,16 @@ async function fetchBias(retries = 3) {
       biasStore.BTC = "neutral";
     }
 
-    biasStore.SPX = biasStore.BTC; // Mirror SPX for now
+    // Mirror for SPX for now (or change logic later)
+    biasStore.SPX = biasStore.BTC;
+
     console.log("Bias updated:", biasStore);
   } catch (err) {
     console.error("Error fetching bias:", err);
-    if (retries > 0) {
-      console.log("Retrying fetchBias...");
-      setTimeout(() => fetchBias(retries - 1), 5000);
-    }
   }
 }
 
-// Run fetch every 5 minutes
+// run fetch every 5 minutes
 setInterval(fetchBias, 5 * 60 * 1000);
 fetchBias();
 
@@ -78,11 +69,6 @@ app.post("/admin/set-bias", (req, res) => {
   res.json({ success: true, asset, bias });
 });
 
-// ===== BIAS ENDPOINT =====
-app.get("/bias", (req, res) => {
-  res.json(biasStore);
-});
-
 // ===== CHAT ENDPOINT =====
 app.post("/chat", async (req, res) => {
   const { asset, question } = req.body;
@@ -94,21 +80,15 @@ app.post("/chat", async (req, res) => {
     });
   }
 
-  if (!allowedQuestions.some(q => question.toLowerCase().includes(q))) {
-    return res.json({
-      error: `I can only answer questions about: ${allowedQuestions.join(", ")}`
-    });
-  }
-
   const bias = biasStore[asset] || "neutral";
 
   const systemPrompt = `
-You are TradeGuide, a trading assistant.
-- Assets: BTC, SPX, XAU, XAG only.
-- Use current bias for BTC/SPX from Bias Store.
-- Use admin-set bias for XAU/XAG.
-- Do not form your own bias.
-- Answer in JSON format: { "advice": "...", "risk": "...", "disclaimer": "This is educational only — not financial advice." }
+You are TradeGuide, a trading assistant. You may only discuss BTC, SPX, XAU, and XAG.
+For BTC and SPX, you must use the current bias from the Bias Store: "${bias}".
+For XAU and XAG, use the admin-set bias.
+Never form your own bias.
+Always include the disclaimer: "This is educational only — not financial advice."
+Answer concisely.
 `;
 
   try {
@@ -123,13 +103,11 @@ You are TradeGuide, a trading assistant.
     });
 
     const reply = completion.choices[0].message.content;
-    res.json({ asset, bias, reply: JSON.parse(reply) });
+    res.json({ asset, bias, reply });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "LLM error" });
   }
 });
 
-// ===== START SERVER =====
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Agent running on port ${PORT}`));
+app.listen(3000, () => console.log("Agent running on http://localhost:3000"));
