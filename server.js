@@ -44,10 +44,7 @@ async function fetchBias(retries = 3) {
     console.log("Bias updated:", biasStore);
   } catch (err) {
     console.error("Error fetching bias:", err);
-    if (retries > 0) {
-      console.log("Retrying fetchBias...");
-      setTimeout(() => fetchBias(retries - 1), 5000);
-    }
+    if (retries > 0) setTimeout(() => fetchBias(retries - 1), 5000);
   }
 }
 
@@ -91,7 +88,7 @@ async function fetchShortTermRealizedPrice() {
     return parseFloat(lastValue);
   } catch (err) {
     console.error("Error fetching ShortTermRealizedPrice:", err);
-    return 123000; // fallback price
+    return 123000; // fallback
   }
 }
 
@@ -104,7 +101,6 @@ async function fetchMarketData() {
     try {
       data = await res.json();
     } catch {
-      // fallback parsing if JSON fails
       const html = await res.text();
       data = {
         Last_signal: html.match(/Current Signal:\s*(BUY|SELL|HOLD)/)?.[1] || "HOLD",
@@ -118,7 +114,6 @@ async function fetchMarketData() {
     const ratio = parseFloat(data.Ratio) || 0.65;
     const slowMA = parseFloat(data.Slow_MA) || 0.67;
     const price = parseFloat(data.Close) || 123000;
-
     const shortTermRealizedPrice = await fetchShortTermRealizedPrice();
 
     console.log("Market Data:", { lastSignal, ratio, slowMA, price, shortTermRealizedPrice });
@@ -130,36 +125,35 @@ async function fetchMarketData() {
   }
 }
 
-// ====== Confidence Score ======
+// ====== Confidence Score (Improved) ======
 function calculateConfidenceScore(lastSignal, ratio, slowMA) {
   if (ratio == null || slowMA == null) return 0;
 
-  let score = 10;
-  if (lastSignal === "BUY") {
-    if (ratio > slowMA) score = 10;
-    else {
-      const distance = Math.abs(slowMA - ratio);
-      score = Math.max(Math.min((distance / (0.5 * slowMA)) * 100, 100), 10);
-    }
-  } else if (lastSignal === "SELL") {
-    if (ratio < slowMA) score = 10;
-    else {
-      const distance = Math.abs(ratio - slowMA);
-      score = Math.max(Math.min((distance / (0.5 * slowMA)) * 100, 100), 10);
-    }
+  let distance = Math.abs(ratio - slowMA);
+  let normalized = Math.min((distance / (0.1 * slowMA)) * 100, 100); // 0.1 instead of 0.5 for more sensitivity
+  let score = Math.max(normalized, 10);
+
+  // Adjust based on signal alignment
+  if ((lastSignal === "BUY" && ratio < slowMA) || (lastSignal === "SELL" && ratio > slowMA)) {
+    score = score; // good alignment
+  } else {
+    score = 10; // weak alignment
   }
+
   return Math.round(score);
 }
 
-// ====== Top Probability ======
+// ====== Top Probability (Improved) ======
 function calculateTopProbability(price, shortTermRealizedPrice) {
   if (!price || !shortTermRealizedPrice) return 0;
-
   const ratio = price / shortTermRealizedPrice;
+
   if (ratio < 1) return 0;
   if (ratio >= 1.36) return 90;
   if (ratio >= 1.18) return Math.round(60 + ((ratio - 1.18)/(1.36 - 1.18))*(90-60));
-  return Math.round(10 + ((ratio - 1)/(1.18 - 1))*50);
+  
+  // More sensitive scaling for ratios between 1.0–1.18
+  return Math.round(10 + ((ratio - 1) / (1.18 - 1)) * 50);
 }
 
 // ====== Core Chat Logic ======
@@ -220,7 +214,6 @@ app.post("/admin/set-bias", (req, res) => {
   if (!["XAU","XAG"].includes(asset)) return res.status(400).json({ error: "Only XAU/XAG" });
   if (!["bullish","bearish","neutral"].includes(bias)) return res.status(400).json({ error: "Invalid bias" });
   biasStore[asset] = bias;
-  console.log(`Admin override: ${asset} set to ${bias}`);
   res.json({ success: true, asset, bias });
 });
 
