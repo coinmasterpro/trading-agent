@@ -29,9 +29,7 @@ const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 // ====== Fetch BTC/SPX bias from external site ======
 async function fetchBias(retries = 3) {
   try {
-    const res = await fetch("https://www.swing-trade-crypto.site/premium_access", {
-      agent: httpsAgent
-    });
+    const res = await fetch("https://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
     const html = await res.text();
 
     if (html.includes("Current Signal: BUY")) {
@@ -57,28 +55,61 @@ async function fetchBias(retries = 3) {
 setInterval(fetchBias, 60 * 60 * 1000);
 fetchBias();
 
-// ====== Fetch Market Data ======
+// ====== Fetch latest ShortTermRealizedPrice from BitcoinMagazinePro ======
+async function fetchShortTermRealizedPrice() {
+  try {
+    const URL = "https://www.bitcoinmagazinepro.com/django_plotly_dash/app/realized_price_sth/_dash-update-component";
+
+    const HEADERS = {
+      "User-Agent": "Mozilla/5.0",
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+      "Origin": "https://www.bitcoinmagazinepro.com",
+      "Referer": "https://www.bitcoinmagazinepro.com/charts/short-term-holder-realized-price/",
+      "Cookie": "csrftoken=8j7eEiCGCpQEqni7VKLj1AEgAEv05CV3; sessionid=9xib6d7ix1fwtm7pa2i3qwbg5vm2q2p8",
+      "X-CSRFToken": "8j7eEiCGCpQEqni7VKLj1AEgAEv05CV3"
+    };
+
+    const PAYLOAD = {
+      output: "chart.figure",
+      outputs: { id: "chart", property: "figure" },
+      inputs: [
+        { id: "url", property: "pathname", value: "/charts/short-term-holder-realized-price/" },
+        { id: "display", property: "children", value: "xs 533px" }
+      ],
+      changedPropIds: ["url.pathname","display.children"]
+    };
+
+    const res = await fetch(URL, {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify(PAYLOAD)
+    });
+
+    const data = await res.json();
+    const sth_realized = data.response.chart.figure.data[1].y;
+    const lastValue = sth_realized[sth_realized.length - 1];
+
+    return parseFloat(lastValue);
+  } catch (err) {
+    console.error("Error fetching ShortTermRealizedPrice:", err);
+    return null;
+  }
+}
+
 // ====== Fetch Market Data ======
 async function fetchMarketData() {
   try {
-    const res = await fetch("https://www.swing-trade-crypto.site/premium_access", {
-      agent: httpsAgent
-    });
-    const html = await res.text();
+    const res = await fetch("https://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
+    const data = await res.json(); // <-- parse as JSON
 
-    const lastSignalMatch = html.match(/Current Signal:\s*(BUY|SELL|HOLD)/);
-    const lastSignal = lastSignalMatch ? lastSignalMatch[1] : "HOLD";
+    const lastSignal = data.Last_signal || "HOLD";
+    const ratio = parseFloat(data.Ratio);
+    const slowMA = parseFloat(data.Slow_MA);
+    const price = parseFloat(data.Close);
 
-    const ratioMatch = html.match(/Ratio:\s*([\d.]+)/);
-    const slowMAMatch = html.match(/Slow_MA:\s*([\d.]+)/);
-    const priceMatch = html.match(/Price:\s*([\d.]+)/);
-    const strpMatch = html.match(/ShortTermRealizedPrice:\s*([\d.]+)/);
-
-    // ✅ Parse as floats
-    const ratio = ratioMatch ? parseFloat(ratioMatch[1]) : null;
-    const slowMA = slowMAMatch ? parseFloat(slowMAMatch[1]) : null;
-    const price = priceMatch ? parseFloat(priceMatch[1]) : null;
-    const shortTermRealizedPrice = strpMatch ? parseFloat(strpMatch[1]) : null;
+    // ✅ Fetch ShortTermRealizedPrice from BitcoinMagazinePro
+    const shortTermRealizedPrice = await fetchShortTermRealizedPrice();
 
     return { lastSignal, ratio, slowMA, price, shortTermRealizedPrice };
   } catch (err) {
@@ -86,9 +117,10 @@ async function fetchMarketData() {
     return { lastSignal: "HOLD", ratio: null, slowMA: null, price: null, shortTermRealizedPrice: null };
   }
 }
+
 // ====== Confidence Score Calculation ======
 function calculateConfidenceScore(lastSignal, ratio, slowMA) {
-  if (!ratio || !slowMA) return 0;
+  if (ratio == null || slowMA == null) return 0;
 
   let score = 10;
 
@@ -220,7 +252,6 @@ app.post("/chat", async (req, res) => {
 // ====== Telegram Bot ======
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
-// /start command
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
   bot.sendMessage(
@@ -235,7 +266,6 @@ bot.onText(/\/start/, (msg) => {
   );
 });
 
-// Catch-all for trading questions
 bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const text = msg.text?.trim();
@@ -266,7 +296,6 @@ bot.on("message", async (msg) => {
   const risk = result.reply.risk || "No risk notes.";
   const disclaimer = result.reply.disclaimer || "";
 
-  // ✅ Nicely formatted Telegram response
   bot.sendMessage(
     chatId,
     `📊 *${asset} — ${question}*\n\n` +
@@ -282,4 +311,3 @@ bot.on("message", async (msg) => {
 // ====== Start Server ======
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Agent + Bot running on port ${PORT}`));
-
