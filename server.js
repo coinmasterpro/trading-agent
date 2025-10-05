@@ -157,4 +157,116 @@ function calculateTopProbability(price, shortTermRealizedPrice) {
 
   const ratio = price / shortTermRealizedPrice;
   if (ratio < 1) return 0;
-  if (ratio >= 1.36) retur
+  if (ratio >= 1.36) return 90;
+  if (ratio >= 1.18) return Math.round(60 + ((ratio - 1.18)/(1.36 - 1.18))*(90-60));
+  return Math.round(10 + ((ratio - 1)/(1.18 - 1))*50);
+}
+
+// ====== Core Chat Logic ======
+async function handleChat(asset, question) {
+  const allowedAssets = ["BTC", "SPX", "XAU", "XAG"];
+  if (!allowedAssets.includes(asset)) return { error: "Only BTC, SPX, XAU, XAG allowed." };
+  if (!allowedQuestions.some(q => question.toLowerCase().includes(q))) {
+    return { error: `Only answerable questions: ${allowedQuestions.join(", ")}` };
+  }
+
+  const bias = biasStore[asset] || "neutral";
+  const { lastSignal, ratio, slowMA, price, shortTermRealizedPrice } = await fetchMarketData();
+  const confidenceScore = calculateConfidenceScore(lastSignal, ratio, slowMA);
+  const topProbability = calculateTopProbability(price, shortTermRealizedPrice);
+
+  const systemPrompt = `
+  You are TradeGuide, a trading assistant.
+  - Assets: BTC, SPX, XAU, XAG only.
+  - Use current bias for BTC/SPX from Bias Store.
+  - Use admin-set bias for XAU/XAG.
+  - Answer in JSON format: { "advice": "...", "risk": "...", "disclaimer": "..." }
+  `;
+
+  try {
+    const completion = await groq.chat.completions.create({
+      model: "llama-3.1-8b-instant",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: `Question: ${question}\nAsset: ${asset}\nBias: ${bias}` }
+      ],
+      temperature: 0.3,
+      max_tokens: 300
+    });
+
+    const reply = completion.choices[0].message.content;
+    return {
+      asset,
+      bias,
+      lastSignal,
+      ratio,
+      slowMA,
+      price,
+      shortTermRealizedPrice,
+      confidenceScore: `${confidenceScore}%`,
+      topProbability: `${topProbability}%`,
+      reply: JSON.parse(reply)
+    };
+  } catch (err) {
+    console.error("LLM error:", err);
+    return { error: "LLM error" };
+  }
+}
+
+// ====== Express Endpoints ======
+app.post("/admin/set-bias", (req, res) => {
+  const { password, asset, bias } = req.body;
+  if (password !== process.env.ADMIN_PASSWORD) return res.status(403).json({ error: "Unauthorized" });
+  if (!["XAU","XAG"].includes(asset)) return res.status(400).json({ error: "Only XAU/XAG" });
+  if (!["bullish","bearish","neutral"].includes(bias)) return res.status(400).json({ error: "Invalid bias" });
+  biasStore[asset] = bias;
+  console.log(`Admin override: ${asset} set to ${bias}`);
+  res.json({ success: true, asset, bias });
+});
+
+app.get("/bias", (req, res) => res.json(biasStore));
+
+app.post("/chat", async (req, res) => {
+  const { asset, question } = req.body;
+  const result = await handleChat(asset, question);
+  res.json(result);
+});
+
+// ====== Telegram Bot ======
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+
+bot.onText(/\/start/, msg => {
+  const chatId = msg.chat.id;
+  bot.sendMessage(chatId,
+    `👋 Welcome to *TradeGuide Bot*!\nAsk about BTC, SPX, XAU, XAG for:\n- Market trend\n- Entry strategy\n- Exit strategy\n- Risk management`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+bot.on("message", async msg => {
+  const chatId = msg.chat.id;
+  const text = msg.text?.trim();
+  if (!text || text.startsWith("/start")) return;
+
+  const asset = ["BTC","SPX","XAU","XAG"].find(a => text.toUpperCase().includes(a));
+  if (!asset) return bot.sendMessage(chatId, "❌ Only BTC, SPX, XAU, XAG supported.");
+  const question = allowedQuestions.find(q => text.toLowerCase().includes(q));
+  if (!question) return bot.sendMessage(chatId, `❌ Only answerable questions: ${allowedQuestions.join(", ")}`);
+
+  const result = await handleChat(asset, question);
+  if (result.error) return bot.sendMessage(chatId, `⚠️ Error: ${result.error}`);
+
+  bot.sendMessage(chatId,
+    `📊 *${asset} — ${question}*\n\n` +
+    `💡 *Advice:* ${result.reply.advice || "No advice"}\n` +
+    `🔥 *Confidence Score:* ${result.confidenceScore}\n` +
+    `📈 *Top Probability:* ${result.topProbability}\n` +
+    `⚠️ *Risk Notes:* ${result.reply.risk || "No risk notes"}\n\n` +
+    `_${result.reply.disclaimer || ""}_`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+// ====== Start Server ======
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`✅ Agent + Bot running on port ${PORT}`));
