@@ -32,15 +32,11 @@ async function fetchBias(retries = 3) {
     const res = await fetch("https://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
     const html = await res.text();
 
-    if (html.includes("Current Signal: BUY")) {
-      biasStore.BTC = "bullish";
-    } else if (html.includes("Current Signal: SELL")) {
-      biasStore.BTC = "bearish";
-    } else {
-      biasStore.BTC = "neutral";
-    }
+    if (html.includes("Current Signal: BUY")) biasStore.BTC = "bullish";
+    else if (html.includes("Current Signal: SELL")) biasStore.BTC = "bearish";
+    else biasStore.BTC = "neutral";
 
-    biasStore.SPX = biasStore.BTC; // Mirror BTC for now
+    biasStore.SPX = biasStore.BTC; // Mirror BTC
     console.log("Bias updated:", biasStore);
   } catch (err) {
     console.error("Error fetching bias:", err);
@@ -55,17 +51,15 @@ fetchBias();
 async function fetchShortTermRealizedPrice() {
   try {
     const URL = "https://www.bitcoinmagazinepro.com/django_plotly_dash/app/realized_price_sth/_dash-update-component";
-
     const HEADERS = {
       "User-Agent": "Mozilla/5.0",
       "Accept": "application/json",
       "Content-Type": "application/json",
       "Origin": "https://www.bitcoinmagazinepro.com",
       "Referer": "https://www.bitcoinmagazinepro.com/charts/short-term-holder-realized-price/",
-      "Cookie": process.env.BMP_COOKIE, // set in .env
-      "X-CSRFToken": process.env.BMP_CSRF // set in .env
+      "Cookie": process.env.BMP_COOKIE,
+      "X-CSRFToken": process.env.BMP_CSRF
     };
-
     const PAYLOAD = {
       output: "chart.figure",
       outputs: { id: "chart", property: "figure" },
@@ -76,16 +70,10 @@ async function fetchShortTermRealizedPrice() {
       changedPropIds: ["url.pathname","display.children"]
     };
 
-    const res = await fetch(URL, {
-      method: "POST",
-      headers: HEADERS,
-      body: JSON.stringify(PAYLOAD)
-    });
-
+    const res = await fetch(URL, { method: "POST", headers: HEADERS, body: JSON.stringify(PAYLOAD) });
     const data = await res.json();
     const sth_realized = data.response.chart.figure.data[1].y;
-    const lastValue = sth_realized[sth_realized.length - 1];
-    return parseFloat(lastValue);
+    return parseFloat(sth_realized[sth_realized.length - 1]);
   } catch (err) {
     console.error("Error fetching ShortTermRealizedPrice:", err);
     return 123000; // fallback
@@ -96,7 +84,6 @@ async function fetchShortTermRealizedPrice() {
 async function fetchMarketData() {
   try {
     const res = await fetch("https://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
-    
     let data;
     try {
       data = await res.json();
@@ -111,13 +98,12 @@ async function fetchMarketData() {
     }
 
     const lastSignal = data.Last_signal || "HOLD";
-    const ratio = parseFloat(data.Ratio) || 0.65;
-    const slowMA = parseFloat(data.Slow_MA) || 0.67;
-    const price = parseFloat(data.Close) || 123000;
+    const ratio = parseFloat(data.Ratio);
+    const slowMA = parseFloat(data.Slow_MA);
+    const price = parseFloat(data.Close);
     const shortTermRealizedPrice = await fetchShortTermRealizedPrice();
 
     console.log("Market Data:", { lastSignal, ratio, slowMA, price, shortTermRealizedPrice });
-
     return { lastSignal, ratio, slowMA, price, shortTermRealizedPrice };
   } catch (err) {
     console.error("Error fetching market data:", err);
@@ -125,25 +111,24 @@ async function fetchMarketData() {
   }
 }
 
-// ====== Confidence Score (Improved) ======
+// ====== Confidence Score 40–100% ======
 function calculateConfidenceScore(lastSignal, ratio, slowMA) {
-  if (ratio == null || slowMA == null) return 0;
+  if (ratio == null || slowMA == null) return 40;
 
-  let distance = Math.abs(ratio - slowMA);
-  let normalized = Math.min((distance / (0.1 * slowMA)) * 100, 100); // 0.1 instead of 0.5 for more sensitivity
-  let score = Math.max(normalized, 10);
+  const distance = Math.abs(ratio - slowMA);
+  let normalized = Math.min((distance / (0.1 * slowMA)) * 100, 100);
+  let score = 40 + normalized * 0.6; // Scale 40–100%
 
-  // Adjust based on signal alignment
   if ((lastSignal === "BUY" && ratio < slowMA) || (lastSignal === "SELL" && ratio > slowMA)) {
     score = score; // good alignment
   } else {
-    score = 10; // weak alignment
+    score = 40; // weak alignment
   }
 
   return Math.round(score);
 }
 
-// ====== Top Probability (Improved) ======
+// ====== Top Probability Calculation ======
 function calculateTopProbability(price, shortTermRealizedPrice) {
   if (!price || !shortTermRealizedPrice) return 0;
   const ratio = price / shortTermRealizedPrice;
@@ -151,18 +136,13 @@ function calculateTopProbability(price, shortTermRealizedPrice) {
   if (ratio < 1) return 0;
   if (ratio >= 1.36) return 90;
   if (ratio >= 1.18) return Math.round(60 + ((ratio - 1.18)/(1.36 - 1.18))*(90-60));
-  
-  // More sensitive scaling for ratios between 1.0–1.18
   return Math.round(10 + ((ratio - 1) / (1.18 - 1)) * 50);
 }
 
 // ====== Core Chat Logic ======
 async function handleChat(asset, question) {
-  const allowedAssets = ["BTC", "SPX", "XAU", "XAG"];
-  if (!allowedAssets.includes(asset)) return { error: "Only BTC, SPX, XAU, XAG allowed." };
-  if (!allowedQuestions.some(q => question.toLowerCase().includes(q))) {
-    return { error: `Only answerable questions: ${allowedQuestions.join(", ")}` };
-  }
+  if (!["BTC","SPX","XAU","XAG"].includes(asset)) return { error: "Only BTC, SPX, XAU, XAG allowed." };
+  if (!allowedQuestions.some(q => question.toLowerCase().includes(q))) return { error: `Only answerable questions: ${allowedQuestions.join(", ")}`; };
 
   const bias = biasStore[asset] || "neutral";
   const { lastSignal, ratio, slowMA, price, shortTermRealizedPrice } = await fetchMarketData();
@@ -218,12 +198,7 @@ app.post("/admin/set-bias", (req, res) => {
 });
 
 app.get("/bias", (req, res) => res.json(biasStore));
-
-app.post("/chat", async (req, res) => {
-  const { asset, question } = req.body;
-  const result = await handleChat(asset, question);
-  res.json(result);
-});
+app.post("/chat", async (req, res) => res.json(await handleChat(req.body.asset, req.body.question)));
 
 // ====== Telegram Bot ======
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
@@ -244,7 +219,7 @@ bot.on("message", async msg => {
   const asset = ["BTC","SPX","XAU","XAG"].find(a => text.toUpperCase().includes(a));
   if (!asset) return bot.sendMessage(chatId, "❌ Only BTC, SPX, XAU, XAG supported.");
   const question = allowedQuestions.find(q => text.toLowerCase().includes(q));
-  if (!question) return bot.sendMessage(chatId, `❌ Only answerable questions: ${allowedQuestions.join(", ")}`);
+  if (!question) return bot.sendMessage(chatId, `❌ Allowed questions: ${allowedQuestions.join(", ")}`);
 
   const result = await handleChat(asset, question);
   if (result.error) return bot.sendMessage(chatId, `⚠️ Error: ${result.error}`);
