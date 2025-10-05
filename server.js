@@ -58,6 +58,7 @@ setInterval(fetchBias, 60 * 60 * 1000);
 fetchBias();
 
 // ====== Fetch Market Data ======
+// ====== Fetch Market Data ======
 async function fetchMarketData() {
   try {
     const res = await fetch("https://www.swing-trade-crypto.site/premium_access", {
@@ -73,6 +74,7 @@ async function fetchMarketData() {
     const priceMatch = html.match(/Price:\s*([\d.]+)/);
     const strpMatch = html.match(/ShortTermRealizedPrice:\s*([\d.]+)/);
 
+    // ✅ Parse as floats
     const ratio = ratioMatch ? parseFloat(ratioMatch[1]) : null;
     const slowMA = slowMAMatch ? parseFloat(slowMAMatch[1]) : null;
     const price = priceMatch ? parseFloat(priceMatch[1]) : null;
@@ -84,7 +86,6 @@ async function fetchMarketData() {
     return { lastSignal: "HOLD", ratio: null, slowMA: null, price: null, shortTermRealizedPrice: null };
   }
 }
-
 // ====== Confidence Score Calculation ======
 function calculateConfidenceScore(lastSignal, ratio, slowMA) {
   if (!ratio || !slowMA) return 0;
@@ -281,3 +282,4 @@ bot.on("message", async (msg) => {
 // ====== Start Server ======
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Agent + Bot running on port ${PORT}`));
+
