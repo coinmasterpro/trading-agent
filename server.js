@@ -141,8 +141,12 @@ function calculateTopProbability(price, shortTermRealizedPrice) {
 
 // ====== Core Chat Logic ======
 async function handleChat(asset, question) {
-  if (!["BTC","SPX","XAU","XAG"].includes(asset)) return { error: "Only BTC, SPX, XAU, XAG allowed." };
-  if (!allowedQuestions.some(q => question.toLowerCase().includes(q))) return { error: `Only answerable questions: ${allowedQuestions.join(", ")}`; };
+  if (!["BTC","SPX","XAU","XAG"].includes(asset)) {
+    return { error: "Only BTC, SPX, XAU, XAG allowed." }
+  }
+  if (!allowedQuestions.some(q => question.toLowerCase().includes(q))) {
+    return { error: `Only answerable questions: ${allowedQuestions.join(", ")}` }
+  }
 
   const bias = biasStore[asset] || "neutral";
   const { lastSignal, ratio, slowMA, price, shortTermRealizedPrice } = await fetchMarketData();
@@ -218,6 +222,7 @@ bot.on("message", async msg => {
 
   const asset = ["BTC","SPX","XAU","XAG"].find(a => text.toUpperCase().includes(a));
   if (!asset) return bot.sendMessage(chatId, "❌ Only BTC, SPX, XAU, XAG supported.");
+  
   const question = allowedQuestions.find(q => text.toLowerCase().includes(q));
   if (!question) return bot.sendMessage(chatId, `❌ Allowed questions: ${allowedQuestions.join(", ")}`);
 
