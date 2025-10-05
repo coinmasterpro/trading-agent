@@ -57,7 +57,78 @@ async function fetchBias(retries = 3) {
 setInterval(fetchBias, 60 * 60 * 1000);
 fetchBias();
 
-// ====== CORE CHAT LOGIC ======
+// ====== Fetch Market Data ======
+async function fetchMarketData() {
+  try {
+    const res = await fetch("https://www.swing-trade-crypto.site/premium_access", {
+      agent: httpsAgent
+    });
+    const html = await res.text();
+
+    const lastSignalMatch = html.match(/Current Signal:\s*(BUY|SELL|HOLD)/);
+    const lastSignal = lastSignalMatch ? lastSignalMatch[1] : "HOLD";
+
+    const ratioMatch = html.match(/Ratio:\s*([\d.]+)/);
+    const slowMAMatch = html.match(/Slow_MA:\s*([\d.]+)/);
+    const priceMatch = html.match(/Price:\s*([\d.]+)/);
+    const strpMatch = html.match(/ShortTermRealizedPrice:\s*([\d.]+)/);
+
+    const ratio = ratioMatch ? parseFloat(ratioMatch[1]) : null;
+    const slowMA = slowMAMatch ? parseFloat(slowMAMatch[1]) : null;
+    const price = priceMatch ? parseFloat(priceMatch[1]) : null;
+    const shortTermRealizedPrice = strpMatch ? parseFloat(strpMatch[1]) : null;
+
+    return { lastSignal, ratio, slowMA, price, shortTermRealizedPrice };
+  } catch (err) {
+    console.error("Error fetching market data:", err);
+    return { lastSignal: "HOLD", ratio: null, slowMA: null, price: null, shortTermRealizedPrice: null };
+  }
+}
+
+// ====== Confidence Score Calculation ======
+function calculateConfidenceScore(lastSignal, ratio, slowMA) {
+  if (!ratio || !slowMA) return 0;
+
+  let score = 10;
+
+  if (lastSignal === "BUY") {
+    if (ratio > slowMA) {
+      score = 10;
+    } else {
+      const distance = Math.abs(slowMA - ratio);
+      const normalized = Math.min((distance / (0.5 * slowMA)) * 100, 100);
+      score = Math.max(normalized, 10);
+    }
+  } else if (lastSignal === "SELL") {
+    if (ratio < slowMA) {
+      score = 10;
+    } else {
+      const distance = Math.abs(ratio - slowMA);
+      const normalized = Math.min((distance / (0.5 * slowMA)) * 100, 100);
+      score = Math.max(normalized, 10);
+    }
+  }
+
+  return Math.round(score);
+}
+
+// ====== Top Probability Calculation ======
+function calculateTopProbability(price, shortTermRealizedPrice) {
+  if (!price || !shortTermRealizedPrice) return 0;
+
+  const ratio = price / shortTermRealizedPrice;
+
+  if (ratio < 1) return 0;
+  if (ratio >= 1.36) return 90;
+  if (ratio >= 1.18 && ratio < 1.36) {
+    const slope = (90 - 60) / (1.36 - 1.18);
+    return Math.round(60 + slope * (ratio - 1.18));
+  }
+
+  return Math.round(10 + ((ratio - 1) / (1.18 - 1)) * 50);
+}
+
+// ====== Core Chat Logic ======
 async function handleChat(asset, question) {
   const allowedAssets = ["BTC", "SPX", "XAU", "XAG"];
   if (!allowedAssets.includes(asset)) {
@@ -70,14 +141,18 @@ async function handleChat(asset, question) {
 
   const bias = biasStore[asset] || "neutral";
 
+  const { lastSignal, ratio, slowMA, price, shortTermRealizedPrice } = await fetchMarketData();
+  const confidenceScore = calculateConfidenceScore(lastSignal, ratio, slowMA);
+  const topProbability = calculateTopProbability(price, shortTermRealizedPrice);
+
   const systemPrompt = `
-You are TradeGuide, a trading assistant.
-- Assets: BTC, SPX, XAU, XAG only.
-- Use current bias for BTC/SPX from Bias Store.
-- Use admin-set bias for XAU/XAG.
-- Do not form your own bias.
-- Answer in JSON format: { "advice": "...", "risk": "...", "disclaimer": "This is educational only — not financial advice." }
-`;
+  You are TradeGuide, a trading assistant.
+  - Assets: BTC, SPX, XAU, XAG only.
+  - Use current bias for BTC/SPX from Bias Store.
+  - Use admin-set bias for XAU/XAG.
+  - Do not form your own bias.
+  - Answer in JSON format: { "advice": "...", "risk": "...", "disclaimer": "This is educational only — not financial advice." }
+  `;
 
   try {
     const completion = await groq.chat.completions.create({
@@ -91,14 +166,25 @@ You are TradeGuide, a trading assistant.
     });
 
     const reply = completion.choices[0].message.content;
-    return { asset, bias, reply: JSON.parse(reply) };
+    return {
+      asset,
+      bias,
+      lastSignal,
+      ratio,
+      slowMA,
+      price,
+      shortTermRealizedPrice,
+      confidenceScore: `${confidenceScore}%`,
+      topProbability: `${topProbability}%`,
+      reply: JSON.parse(reply)
+    };
   } catch (err) {
     console.error("Groq LLM error:", err);
     return { error: "LLM error" };
   }
 }
 
-// ====== EXPRESS ENDPOINTS ======
+// ====== Express Endpoints ======
 app.post("/admin/set-bias", (req, res) => {
   const { password, asset, bias } = req.body;
 
@@ -130,7 +216,7 @@ app.post("/chat", async (req, res) => {
   res.json(result);
 });
 
-// ====== TELEGRAM BOT ======
+// ====== Telegram Bot ======
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
 // /start command
@@ -139,9 +225,9 @@ bot.onText(/\/start/, (msg) => {
   bot.sendMessage(
     chatId,
     `👋 Welcome to *TradeGuide Bot*!\n\n` +
-      `I can help you with trading insights for:\n` +
+      `I provide trading insights for:\n` +
       `- BTC\n- SPX\n- XAU (Gold)\n- XAG (Silver)\n\n` +
-      `You can ask about:\n` +
+      `Ask about:\n` +
       `- Market trend\n- Entry strategy\n- Exit strategy\n- Risk management\n\n` +
       `Example: *BTC market trend*`,
     { parse_mode: "Markdown" }
@@ -179,18 +265,19 @@ bot.on("message", async (msg) => {
   const risk = result.reply.risk || "No risk notes.";
   const disclaimer = result.reply.disclaimer || "";
 
+  // ✅ Nicely formatted Telegram response
   bot.sendMessage(
     chatId,
     `📊 *${asset} — ${question}*\n\n` +
-      `💡 Advice: ${advice}\n\n` +
-      `⚠️ Risk: ${risk}\n\n` +
+      `💡 *Advice:* ${advice}\n\n` +
+      `🔥 *Confidence Score:* ${result.confidenceScore}\n` +
+      `📈 *Top Probability:* ${result.topProbability}\n\n` +
+      `⚠️ *Risk Notes:* ${risk}\n\n` +
       `_${disclaimer}_`,
     { parse_mode: "Markdown" }
   );
 });
 
-// ====== START SERVER ======
+// ====== Start Server ======
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Agent + Bot running on port ${PORT}`));
-
-
