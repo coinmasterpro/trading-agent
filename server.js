@@ -128,6 +128,7 @@ async function handleBitcoinStrategy() {
 
   message += `\n🔥 *Confidence Score:* ${confidenceScore}%\n📊 *Top Probability:* ${topProbability}%\n`;
   if (topProbability > 50) message += `⚠️ Be cautious — market top could be approaching.\n`;
+  if (topProbability < 50) message += `⚠️ Still low probability of a market top.\n`;
 
   message += `\n_Disclaimer: This is not financial advice. Trade responsibly._`;
   return message;
@@ -161,3 +162,4 @@ bot.on("message", async msg => {
 // ====== Start Server ======
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Bitcoin Strategy Bot running on port ${PORT}`));
+
