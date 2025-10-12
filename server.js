@@ -84,18 +84,20 @@ async function fetchMarketData() {
 function calculateConfidenceScore(lastSignal, ratio, slowMA) {
   if (ratio == null || slowMA == null) return 40;
 
-  // Base 40%
+  // Default weak alignment
   let score = 40;
 
   // Only calculate extra confidence if signal aligns with MA
-  if ((lastSignal === "BUY" && ratio < slowMA) || (lastSignal === "SELL" && ratio > slowMA)) {
+  const aligned = (lastSignal === "BUY" && ratio < slowMA) || (lastSignal === "SELL" && ratio > slowMA);
+  if (aligned) {
     const distance = Math.abs(ratio - slowMA);
-    let normalized = Math.min((distance / slowMA) * 50, 60);
-    score += normalized; // 40–100%
+    const normalized = Math.min((distance / slowMA) * 50, 60); // cap to 60
+    score += normalized;
   }
 
   return Math.round(score);
 }
+
 
 // ====== Top Probability ======
 function calculateTopProbability(price, shortTermRealizedPrice) {
@@ -165,5 +167,6 @@ bot.on("message", async msg => {
 // ====== Start Server ======
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Bitcoin Strategy Bot running on port ${PORT}`));
+
 
 
