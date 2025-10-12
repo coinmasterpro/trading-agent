@@ -1,6 +1,5 @@
 import express from "express";
 import fetch from "node-fetch";
-import Groq from "groq-sdk";
 import dotenv from "dotenv";
 import https from "https";
 import TelegramBot from "node-telegram-bot-api";
@@ -9,13 +8,13 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
+// ====== HTTPS Agent (ignore SSL errors if needed) ======
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-// ====== Fetch BTC Bias ======
-async function fetchBias(retries = 3) {
+// ====== Fetch Bias from Swing-Trade-Crypto ======
+async function fetchBias() {
   try {
-    const res = await fetch("https://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
+    const res = await fetch("http://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
     const html = await res.text();
 
     if (html.includes("Current Signal: BUY")) return "bullish";
@@ -23,12 +22,30 @@ async function fetchBias(retries = 3) {
     return "neutral";
   } catch (err) {
     console.error("Error fetching bias:", err);
-    if (retries > 0) return fetchBias(retries - 1);
     return "neutral";
   }
 }
 
-// ====== Fetch ShortTermRealizedPrice ======
+// ====== Fetch Market Data (for confidence calculation) ======
+async function fetchMarketData() {
+  try {
+    const res = await fetch("http://www.swing-trade-crypto.site/data", { agent: httpsAgent });
+    const data = await res.json();
+
+    const lastSignal = data.Last_signal || "HOLD";
+    const ratio = parseFloat(data.Ratio);
+    const slowMA = parseFloat(data.Slow_MA);
+    const price = parseFloat(data.Close);
+
+    console.log("Fetched Market Data:", { lastSignal, ratio, slowMA, price });
+    return { lastSignal, ratio, slowMA, price };
+  } catch (err) {
+    console.error("Error fetching market data:", err);
+    return { lastSignal: "HOLD", ratio: 0.65, slowMA: 0.67, price: 123000 };
+  }
+}
+
+// ====== Fetch Short-Term Realized Price (for Top Probability) ======
 async function fetchShortTermRealizedPrice() {
   try {
     const URL = "https://www.bitcoinmagazinepro.com/django_plotly_dash/app/realized_price_sth/_dash-update-component";
@@ -61,56 +78,45 @@ async function fetchShortTermRealizedPrice() {
   }
 }
 
-// ====== Fetch Market Data ======
-async function fetchMarketData() {
-  try {
-    const res = await fetch("https://www.swing-trade-crypto.site/data", { agent: httpsAgent });
-    let html = await res.text();
-
-    const lastSignal = html.match(/Current Signal:\s*(BUY|SELL|HOLD)/)?.[1] || "HOLD";
-    const ratio = parseFloat(html.match(/Ratio:\s*([\d.]+)/)?.[1] || "0.65");
-    const slowMA = parseFloat(html.match(/Slow_MA:\s*([\d.]+)/)?.[1] || "0.67");
-    const price = parseFloat(html.match(/Price:\s*([\d.]+)/)?.[1] || "123000");
-    const shortTermRealizedPrice = await fetchShortTermRealizedPrice();
-
-    return { lastSignal, ratio, slowMA, price, shortTermRealizedPrice };
-  } catch (err) {
-    console.error("Error fetching market data:", err);
-    return { lastSignal: "HOLD", ratio: 0.65, slowMA: 0.67, price: 123000, shortTermRealizedPrice: 123000 };
-  }
-}
-
-// ====== Confidence Score (40–100%) ======
+// ====== Confidence Score (Corrected Logic) ======
 function calculateConfidenceScore(lastSignal, ratio, slowMA) {
-  if (ratio == null || slowMA == null) return 40;
-  const distance = Math.abs(ratio - slowMA);
-  let normalized = Math.min((distance / (0.1 * slowMA)) * 100, 100);
-  let score = 40 + normalized * 0.6;
+  if (!ratio || !slowMA) return 40;
 
-  if ((lastSignal === "BUY" && ratio < slowMA) || (lastSignal === "SELL" && ratio > slowMA)) score = score;
-  else score = 40;
-  return Math.round(score);
+  const distance = Math.abs(ratio - slowMA);
+  const normalized = Math.min((distance / (0.1 * slowMA)) * 100, 100);
+  let score = 40 + normalized * 0.6; // base scale 40–100%
+
+  // ✅ Correct trend alignment
+  if ((lastSignal === "BUY" && ratio > slowMA) || (lastSignal === "SELL" && ratio < slowMA)) {
+    return Math.round(score); // aligned
+  } else {
+    return 40; // misaligned
+  }
 }
 
 // ====== Top Probability ======
 function calculateTopProbability(price, shortTermRealizedPrice) {
   if (!price || !shortTermRealizedPrice) return 0;
   const ratio = price / shortTermRealizedPrice;
+
   if (ratio < 1) return 0;
-  if (ratio >= 1.36) return 90;
-  if (ratio >= 1.18) return Math.round(60 + ((ratio - 1.18) / (1.36 - 1.18)) * (90 - 60));
+  if (ratio >= 1.5) return 95;
+  if (ratio >= 1.36) return 85;
+  if (ratio >= 1.18) return Math.round(60 + ((ratio - 1.18) / (1.36 - 1.18)) * (85 - 60));
   return Math.round(10 + ((ratio - 1) / (1.18 - 1)) * 50);
 }
 
-// ====== Handle Bitcoin Strategy ======
+// ====== Bitcoin Strategy Core ======
 async function handleBitcoinStrategy() {
   const bias = await fetchBias();
-  const { lastSignal, ratio, slowMA, price, shortTermRealizedPrice } = await fetchMarketData();
+  const { lastSignal, ratio, slowMA, price } = await fetchMarketData();
+  const shortTermRealizedPrice = await fetchShortTermRealizedPrice();
+
   const confidenceScore = calculateConfidenceScore(lastSignal, ratio, slowMA);
   const topProbability = calculateTopProbability(price, shortTermRealizedPrice);
 
   let message = `💎 *Bitcoin Strategy*\n\n`;
-  
+
   if (bias === "bullish") {
     message += `📈 *Bias:* Bullish\n💰 *Advice:* Buy Spot and enter Long position if confidence score > 40%\n`;
     if (confidenceScore > 40) {
@@ -129,14 +135,16 @@ async function handleBitcoinStrategy() {
   }
 
   message += `\n_Disclaimer: This is not financial advice. Trade responsibly._`;
+
   return message;
 }
 
-// ====== Telegram Bot ======
+// ====== Telegram Bot Setup ======
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
 bot.onText(/\/start/, msg => {
-  bot.sendMessage(msg.chat.id,
+  bot.sendMessage(
+    msg.chat.id,
     `👋 Welcome to *TradeGuide Bot*\n\nClick below to get your current Bitcoin strategy.`,
     {
       reply_markup: {
@@ -152,12 +160,18 @@ bot.on("message", async msg => {
   const chatId = msg.chat.id;
   const text = msg.text?.trim();
   if (text === "🪙 Bitcoin Strategy") {
+    bot.sendMessage(chatId, "⏳ Fetching latest Bitcoin data...", { parse_mode: "Markdown" });
     const message = await handleBitcoinStrategy();
     bot.sendMessage(chatId, message, { parse_mode: "Markdown" });
   }
 });
 
+// ====== Express Endpoint (optional external API access) ======
+app.get("/bitcoin-strategy", async (req, res) => {
+  const message = await handleBitcoinStrategy();
+  res.json({ message });
+});
+
 // ====== Start Server ======
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Bitcoin Strategy Bot running on port ${PORT}`));
-
