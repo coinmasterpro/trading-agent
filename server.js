@@ -59,7 +59,7 @@ async function fetchShortTermRealizedPrice() {
   }
 }
 
-// ====== Fetch Market Data (JSON parsing) ======
+// ====== Fetch Market Data ======
 async function fetchMarketData() {
   try {
     const res = await fetch("https://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
@@ -109,6 +109,9 @@ async function handleBitcoinStrategy() {
 
   let message = `💎 *Bitcoin Strategy*\n\n`;
 
+  // 🪙 Current Price
+  message += `💵 *Current Price:* $${price.toLocaleString()}\n\n`;
+
   if (bias === "bullish") {
     message += `📈 *Bias:* Bullish\n💰 *Advice:* Buy Spot and enter Long position if confidence score > 40%\n`;
     if (confidenceScore > 40) {
@@ -128,7 +131,7 @@ async function handleBitcoinStrategy() {
   return message;
 }
 
-// ====== Telegram Bot (Webhook Mode for Render) ======
+// ====== Telegram Bot (Webhook for Render) ======
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN);
 const WEBHOOK_URL = `https://trading-agent-jcjg.onrender.com/${process.env.TELEGRAM_BOT_TOKEN}`;
 
