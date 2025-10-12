@@ -59,16 +59,19 @@ async function fetchShortTermRealizedPrice() {
   }
 }
 
-// ====== Fetch Market Data ======
+// ====== Fetch Market Data (JSON parsing fix) ======
 async function fetchMarketData() {
   try {
     const res = await fetch("https://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
-    const html = await res.text();
+    const text = await res.text();
 
-    const lastSignal = html.match(/Current Signal:\s*(BUY|SELL|HOLD)/)?.[1] || "HOLD";
-    const ratio = parseFloat(html.match(/Ratio:\s*([\d.]+)/)?.[1] || "0.65");
-    const slowMA = parseFloat(html.match(/Slow_MA:\s*([\d.]+)/)?.[1] || "0.67");
-    const price = parseFloat(html.match(/Price:\s*([\d.]+)/)?.[1] || "123000");
+    // Parse JSON instead of regex
+    const data = JSON.parse(text);
+
+    const lastSignal = data.Last_signal || "HOLD";
+    const ratio = parseFloat(data.Ratio);
+    const slowMA = parseFloat(data.Slow_MA);
+    const price = parseFloat(data.Close);
     const shortTermRealizedPrice = await fetchShortTermRealizedPrice();
 
     return { lastSignal, ratio, slowMA, price, shortTermRealizedPrice };
@@ -82,11 +85,11 @@ async function fetchMarketData() {
 function calculateConfidenceScore(lastSignal, ratio, slowMA) {
   if (ratio == null || slowMA == null) return 40;
 
-  // Alignment check first
+  // Alignment check
   const aligned = (lastSignal === "BUY" && ratio < slowMA) || (lastSignal === "SELL" && ratio > slowMA);
-  if (!aligned) return 40; // weak alignment → 40%
+  if (!aligned) return 40;
 
-  // Only calculate extra confidence if aligned
+  // Compute extra confidence only if aligned
   const distance = Math.abs(ratio - slowMA);
   const normalized = Math.min((distance / slowMA) * 50, 60); // cap at 60
   return Math.round(40 + normalized);
