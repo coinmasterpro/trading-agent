@@ -161,5 +161,9 @@ bot.on("message", async msg => {
 
 // ====== Start Server ======
 const PORT = process.env.PORT || 3000;
+// ====== Health Check Route ======
+app.get("/health", (req, res) => res.send("ok"));
+
 app.listen(PORT, () => console.log(`✅ Bitcoin Strategy Bot running on port ${PORT}`));
+
 
