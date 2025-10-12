@@ -23,8 +23,6 @@ async function fetchBias() {
     const res = await fetch("http://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
     const html = await res.text();
 
-    // console.log("🔍 Fetched HTML snippet:", html.slice(0, 400));
-
     if (html.toLowerCase().includes("current signal: buy")) biasStore.BTC = "bullish";
     else if (html.toLowerCase().includes("current signal: sell")) biasStore.BTC = "bearish";
     else biasStore.BTC = "neutral";
@@ -60,4 +58,96 @@ async function fetchMarketData() {
 
 // ====== Confidence Score Calculation ======
 function calculateConfidenceScore(lastSignal, ratio, slowMA) {
-  if (ratio == null
+  if (ratio == null || slowMA == null) return 40;
+
+  const distance = Math.abs(ratio - slowMA);
+  let normalized = Math.min((distance / (0.1 * slowMA)) * 100, 100);
+  let score = 40 + normalized * 0.6; // Scale 40–100%
+
+  if ((lastSignal === "BUY" && ratio < slowMA) || (lastSignal === "SELL" && ratio > slowMA)) {
+    score = score; // good alignment
+  } else {
+    score = 40; // weak alignment
+  }
+
+  return Math.round(score);
+}
+
+// ====== Top Probability Calculation ======
+function calculateTopProbability(price, shortTermRealizedPrice = 76000) {
+  if (!price || !shortTermRealizedPrice) return 0;
+  const ratio = price / shortTermRealizedPrice;
+
+  if (ratio < 1) return 0;
+  if (ratio >= 1.36) return 90;
+  if (ratio >= 1.18) return Math.round(60 + ((ratio - 1.18) / (1.36 - 1.18)) * (90 - 60));
+  return Math.round(10 + ((ratio - 1) / (1.18 - 1)) * 50);
+}
+
+// ====== Handle BTC Strategy ======
+async function handleBitcoinStrategy() {
+  const { lastSignal, ratio, slowMA, price } = await fetchMarketData();
+  const confidenceScore = calculateConfidenceScore(lastSignal, ratio, slowMA);
+  const topProbability = calculateTopProbability(price, 76000);
+
+  const bias = biasStore.BTC;
+  let advice = "";
+  let risk = "";
+
+  if (bias === "bullish") {
+    advice = `🟢 *Bias:* Bullish\n💡 *Strategy:* Buy Spot and enter Long position if confidence score > 40%.`;
+
+    if (confidenceScore > 40) {
+      advice += `\n\n📈 *Entry Strategy:* Enter long at current price (${price}).\nKeep Stop Loss at -10% of current price.\nUse maximum leverage of 2x.\nYou can adjust leverage and SL per your risk appetite, but it's advisable to stick to these levels.`;
+    }
+
+    if (topProbability > 50) risk += `⚠️ *Be cautious as a market top could be approaching.*`;
+  } else if (bias === "bearish") {
+    advice = `🔴 *Bias:* Bearish\n💡 *Strategy:* Close all Long Positions. Do *not* Short or Sell Spot BTC.`;
+
+    if (topProbability > 50) risk += `⚠️ *Be cautious as a market top could be approaching.*`;
+  } else {
+    advice = `⚪ *Bias:* Neutral\n💡 *Strategy:* Wait for clearer confirmation before entering any trade.`;
+  }
+
+  const disclaimer =
+    "_This advice is for educational purposes only. Trading involves risk. Do your own research before taking any positions._";
+
+  return {
+    asset: "BTC",
+    bias,
+    lastSignal,
+    confidenceScore: `${confidenceScore}%`,
+    topProbability: `${topProbability}%`,
+    price,
+    advice,
+    risk,
+    disclaimer
+  };
+}
+
+// ====== Express Endpoints ======
+app.get("/", (req, res) => res.send("✅ Bitcoin Strategy Bot Running"));
+app.get("/bias", (req, res) => res.json(biasStore));
+app.get("/bitcoin-strategy", async (req, res) => {
+  const result = await handleBitcoinStrategy();
+  res.json(result);
+});
+
+// ====== Telegram Bot ======
+bot.onText(/\/start|\/btc|\/signal/i, async (msg) => {
+  const chatId = msg.chat.id;
+
+  await bot.sendMessage(chatId, "⏳ Fetching latest Bitcoin data...");
+
+  const result = await handleBitcoinStrategy();
+  await bot.sendMessage(
+    chatId,
+    `📊 *Bitcoin Strategy*\n\n${result.advice}\n\n🔥 *Confidence Score:* ${result.confidenceScore}\n📈 *Top Probability:* ${result.topProbability}\n\n${result.risk}\n\n${result.disclaimer}`,
+    { parse_mode: "Markdown" }
+  );
+});
+
+// ====== Start Server ======
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Bitcoin Strategy Agent running on port ${PORT}`));
