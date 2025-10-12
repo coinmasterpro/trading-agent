@@ -1,6 +1,5 @@
 import express from "express";
 import fetch from "node-fetch";
-import Groq from "groq-sdk";
 import dotenv from "dotenv";
 import https from "https";
 import TelegramBot from "node-telegram-bot-api";
@@ -10,7 +9,6 @@ const app = express();
 app.use(express.json());
 
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 // ====== Fetch BTC Bias ======
 async function fetchBias(retries = 3) {
@@ -65,7 +63,7 @@ async function fetchShortTermRealizedPrice() {
 async function fetchMarketData() {
   try {
     const res = await fetch("https://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
-    let html = await res.text();
+    const html = await res.text();
 
     const lastSignal = html.match(/Current Signal:\s*(BUY|SELL|HOLD)/)?.[1] || "HOLD";
     const ratio = parseFloat(html.match(/Ratio:\s*([\d.]+)/)?.[1] || "0.65");
@@ -80,29 +78,25 @@ async function fetchMarketData() {
   }
 }
 
-// ====== Confidence Score (40–100%) ======
+// ====== Confidence Score (fixed) ======
 function calculateConfidenceScore(lastSignal, ratio, slowMA) {
   if (ratio == null || slowMA == null) return 40;
 
-  // Default weak alignment
-  let score = 40;
-
-  // Only calculate extra confidence if signal aligns with MA
+  // Alignment check first
   const aligned = (lastSignal === "BUY" && ratio < slowMA) || (lastSignal === "SELL" && ratio > slowMA);
-  if (aligned) {
-    const distance = Math.abs(ratio - slowMA);
-    const normalized = Math.min((distance / slowMA) * 50, 60); // cap to 60
-    score += normalized;
-  }
+  if (!aligned) return 40; // weak alignment → 40%
 
-  return Math.round(score);
+  // Only calculate extra confidence if aligned
+  const distance = Math.abs(ratio - slowMA);
+  const normalized = Math.min((distance / slowMA) * 50, 60); // cap at 60
+  return Math.round(40 + normalized);
 }
-
 
 // ====== Top Probability ======
 function calculateTopProbability(price, shortTermRealizedPrice) {
   if (!price || !shortTermRealizedPrice) return 0;
   const ratio = price / shortTermRealizedPrice;
+
   if (ratio < 1) return 0;
   if (ratio >= 1.36) return 90;
   if (ratio >= 1.18) return Math.round(60 + ((ratio - 1.18) / (1.36 - 1.18)) * (90 - 60));
@@ -117,23 +111,20 @@ async function handleBitcoinStrategy() {
   const topProbability = calculateTopProbability(price, shortTermRealizedPrice);
 
   let message = `💎 *Bitcoin Strategy*\n\n`;
-  
+
   if (bias === "bullish") {
     message += `📈 *Bias:* Bullish\n💰 *Advice:* Buy Spot and enter Long position if confidence score > 40%\n`;
     if (confidenceScore > 40) {
-      message += `🧭 *Entry Strategy:* Enter long at current price.\nSet Stop Loss at *-10%* of current price and keep leverage max *2x*.\nYou may adjust based on your risk appetite.\n`;
+      message += `🧭 *Entry Strategy:* Enter long at current price.\nSet Stop Loss at *-10%* and leverage max *2x*.\nAdjust per risk appetite.\n`;
     }
   } else if (bias === "bearish") {
     message += `📉 *Bias:* Bearish\n🚫 *Advice:* Close all Long Positions. Don’t Short or Sell Spot BTC.\n`;
   } else {
-    message += `⚖️ *Bias:* Neutral\n🤔 Market indecisive — wait for a clearer trend before entering.\n`;
+    message += `⚖️ *Bias:* Neutral\n🤔 Market indecisive — wait for clearer trend.\n`;
   }
 
   message += `\n🔥 *Confidence Score:* ${confidenceScore}%\n📊 *Top Probability:* ${topProbability}%\n`;
-
-  if (topProbability > 50) {
-    message += `⚠️ Be cautious — market top could be approaching.\n`;
-  }
+  if (topProbability > 50) message += `⚠️ Be cautious — market top could be approaching.\n`;
 
   message += `\n_Disclaimer: This is not financial advice. Trade responsibly._`;
   return message;
@@ -167,6 +158,3 @@ bot.on("message", async msg => {
 // ====== Start Server ======
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Bitcoin Strategy Bot running on port ${PORT}`));
-
-
-
