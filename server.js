@@ -64,7 +64,7 @@ async function fetchShortTermRealizedPrice() {
 // ====== Fetch Market Data ======
 async function fetchMarketData() {
   try {
-    const res = await fetch("https://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
+    const res = await fetch("https://www.swing-trade-crypto.site/data", { agent: httpsAgent });
     let html = await res.text();
 
     const lastSignal = html.match(/Current Signal:\s*(BUY|SELL|HOLD)/)?.[1] || "HOLD";
@@ -160,3 +160,4 @@ bot.on("message", async msg => {
 // ====== Start Server ======
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Bitcoin Strategy Bot running on port ${PORT}`));
+
