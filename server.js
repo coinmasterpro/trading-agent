@@ -62,7 +62,7 @@ async function fetchShortTermRealizedPrice() {
 // ====== Fetch Market Data ======
 async function fetchMarketData() {
   try {
-    const res = await fetch("https://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
+    const res = await fetch("https://www.swing-trade-crypto.site/data", { agent: httpsAgent });
     const text = await res.text();
     const data = JSON.parse(text);
 
@@ -174,3 +174,4 @@ app.get("/health", (req, res) => res.send("ok"));
 // ====== Start Server ======
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Bot running via webhook on port ${PORT}`));
+
