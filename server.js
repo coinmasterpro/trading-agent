@@ -9,45 +9,26 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-// ====== Groq Client ======
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-// ====== Bias Store ======
-let biasStore = { BTC: "neutral", SPX: "neutral", XAU: "neutral", XAG: "neutral" };
-
-// Allowed question types
-const allowedQuestions = [
-  "market trend",
-  "entry strategy",
-  "exit strategy",
-  "risk management"
-];
-
-// ====== Ignore SSL (for scraping) ======
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
-
-// ====== Fetch BTC/SPX bias from external site ======
+// ====== Fetch BTC Bias ======
 async function fetchBias(retries = 3) {
   try {
     const res = await fetch("https://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
     const html = await res.text();
 
-    if (html.includes("Current Signal: BUY")) biasStore.BTC = "bullish";
-    else if (html.includes("Current Signal: SELL")) biasStore.BTC = "bearish";
-    else biasStore.BTC = "neutral";
-
-    biasStore.SPX = biasStore.BTC; // Mirror BTC
-    console.log("Bias updated:", biasStore);
+    if (html.includes("Current Signal: BUY")) return "bullish";
+    if (html.includes("Current Signal: SELL")) return "bearish";
+    return "neutral";
   } catch (err) {
     console.error("Error fetching bias:", err);
-    if (retries > 0) setTimeout(() => fetchBias(retries - 1), 5000);
+    if (retries > 0) return fetchBias(retries - 1);
+    return "neutral";
   }
 }
 
-setInterval(fetchBias, 60 * 60 * 1000);
-fetchBias();
-
-// ====== Fetch ShortTermRealizedPrice from BitcoinMagazinePro ======
+// ====== Fetch ShortTermRealizedPrice ======
 async function fetchShortTermRealizedPrice() {
   try {
     const URL = "https://www.bitcoinmagazinepro.com/django_plotly_dash/app/realized_price_sth/_dash-update-component";
@@ -67,7 +48,7 @@ async function fetchShortTermRealizedPrice() {
         { id: "url", property: "pathname", value: "/charts/short-term-holder-realized-price/" },
         { id: "display", property: "children", value: "xs 533px" }
       ],
-      changedPropIds: ["url.pathname","display.children"]
+      changedPropIds: ["url.pathname", "display.children"]
     };
 
     const res = await fetch(URL, { method: "POST", headers: HEADERS, body: JSON.stringify(PAYLOAD) });
@@ -84,26 +65,14 @@ async function fetchShortTermRealizedPrice() {
 async function fetchMarketData() {
   try {
     const res = await fetch("https://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
-    let data;
-    try {
-      data = await res.json();
-    } catch {
-      const html = await res.text();
-      data = {
-        Last_signal: html.match(/Current Signal:\s*(BUY|SELL|HOLD)/)?.[1] || "HOLD",
-        Ratio: html.match(/Ratio:\s*([\d.]+)/)?.[1] || "0.65",
-        Slow_MA: html.match(/Slow_MA:\s*([\d.]+)/)?.[1] || "0.67",
-        Close: html.match(/Price:\s*([\d.]+)/)?.[1] || "123000"
-      };
-    }
+    let html = await res.text();
 
-    const lastSignal = data.Last_signal || "HOLD";
-    const ratio = parseFloat(data.Ratio);
-    const slowMA = parseFloat(data.Slow_MA);
-    const price = parseFloat(data.Close);
+    const lastSignal = html.match(/Current Signal:\s*(BUY|SELL|HOLD)/)?.[1] || "HOLD";
+    const ratio = parseFloat(html.match(/Ratio:\s*([\d.]+)/)?.[1] || "0.65");
+    const slowMA = parseFloat(html.match(/Slow_MA:\s*([\d.]+)/)?.[1] || "0.67");
+    const price = parseFloat(html.match(/Price:\s*([\d.]+)/)?.[1] || "123000");
     const shortTermRealizedPrice = await fetchShortTermRealizedPrice();
 
-    console.log("Market Data:", { lastSignal, ratio, slowMA, price, shortTermRealizedPrice });
     return { lastSignal, ratio, slowMA, price, shortTermRealizedPrice };
   } catch (err) {
     console.error("Error fetching market data:", err);
@@ -111,135 +80,83 @@ async function fetchMarketData() {
   }
 }
 
-// ====== Confidence Score 40–100% ======
+// ====== Confidence Score (40–100%) ======
 function calculateConfidenceScore(lastSignal, ratio, slowMA) {
   if (ratio == null || slowMA == null) return 40;
-
   const distance = Math.abs(ratio - slowMA);
   let normalized = Math.min((distance / (0.1 * slowMA)) * 100, 100);
-  let score = 40 + normalized * 0.6; // Scale 40–100%
+  let score = 40 + normalized * 0.6;
 
-  if ((lastSignal === "BUY" && ratio < slowMA) || (lastSignal === "SELL" && ratio > slowMA)) {
-    score = score; // good alignment
-  } else {
-    score = 40; // weak alignment
-  }
-
+  if ((lastSignal === "BUY" && ratio < slowMA) || (lastSignal === "SELL" && ratio > slowMA)) score = score;
+  else score = 40;
   return Math.round(score);
 }
 
-// ====== Top Probability Calculation ======
+// ====== Top Probability ======
 function calculateTopProbability(price, shortTermRealizedPrice) {
   if (!price || !shortTermRealizedPrice) return 0;
   const ratio = price / shortTermRealizedPrice;
-
   if (ratio < 1) return 0;
   if (ratio >= 1.36) return 90;
-  if (ratio >= 1.18) return Math.round(60 + ((ratio - 1.18)/(1.36 - 1.18))*(90-60));
+  if (ratio >= 1.18) return Math.round(60 + ((ratio - 1.18) / (1.36 - 1.18)) * (90 - 60));
   return Math.round(10 + ((ratio - 1) / (1.18 - 1)) * 50);
 }
 
-// ====== Core Chat Logic ======
-async function handleChat(asset, question) {
-  if (!["BTC","SPX","XAU","XAG"].includes(asset)) {
-    return { error: "Only BTC, SPX, XAU, XAG allowed." }
-  }
-  if (!allowedQuestions.some(q => question.toLowerCase().includes(q))) {
-    return { error: `Only answerable questions: ${allowedQuestions.join(", ")}` }
-  }
-
-  const bias = biasStore[asset] || "neutral";
+// ====== Handle Bitcoin Strategy ======
+async function handleBitcoinStrategy() {
+  const bias = await fetchBias();
   const { lastSignal, ratio, slowMA, price, shortTermRealizedPrice } = await fetchMarketData();
   const confidenceScore = calculateConfidenceScore(lastSignal, ratio, slowMA);
   const topProbability = calculateTopProbability(price, shortTermRealizedPrice);
 
-  const systemPrompt = `
-  You are TradeGuide, a trading assistant.
-  - Assets: BTC, SPX, XAU, XAG only.
-  - Use current bias for BTC/SPX from Bias Store.
-  - Use admin-set bias for XAU/XAG.
-  - Answer in JSON format: { "advice": "...", "risk": "...", "disclaimer": "..." }
-  `;
-
-  try {
-    const completion = await groq.chat.completions.create({
-      model: "llama-3.1-8b-instant",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: `Question: ${question}\nAsset: ${asset}\nBias: ${bias}` }
-      ],
-      temperature: 0.3,
-      max_tokens: 300
-    });
-
-    const reply = completion.choices[0].message.content;
-    return {
-      asset,
-      bias,
-      lastSignal,
-      ratio,
-      slowMA,
-      price,
-      shortTermRealizedPrice,
-      confidenceScore: `${confidenceScore}%`,
-      topProbability: `${topProbability}%`,
-      reply: JSON.parse(reply)
-    };
-  } catch (err) {
-    console.error("LLM error:", err);
-    return { error: "LLM error" };
+  let message = `💎 *Bitcoin Strategy*\n\n`;
+  
+  if (bias === "bullish") {
+    message += `📈 *Bias:* Bullish\n💰 *Advice:* Buy Spot and enter Long position if confidence score > 40%\n`;
+    if (confidenceScore > 40) {
+      message += `🧭 *Entry Strategy:* Enter long at current price.\nSet Stop Loss at *-10%* of current price and keep leverage max *2x*.\nYou may adjust based on your risk appetite.\n`;
+    }
+  } else if (bias === "bearish") {
+    message += `📉 *Bias:* Bearish\n🚫 *Advice:* Close all Long Positions. Don’t Short or Sell Spot BTC.\n`;
+  } else {
+    message += `⚖️ *Bias:* Neutral\n🤔 Market indecisive — wait for a clearer trend before entering.\n`;
   }
+
+  message += `\n🔥 *Confidence Score:* ${confidenceScore}%\n📊 *Top Probability:* ${topProbability}%\n`;
+
+  if (topProbability > 50) {
+    message += `⚠️ Be cautious — market top could be approaching.\n`;
+  }
+
+  message += `\n_Disclaimer: This is not financial advice. Trade responsibly._`;
+  return message;
 }
-
-// ====== Express Endpoints ======
-app.post("/admin/set-bias", (req, res) => {
-  const { password, asset, bias } = req.body;
-  if (password !== process.env.ADMIN_PASSWORD) return res.status(403).json({ error: "Unauthorized" });
-  if (!["XAU","XAG"].includes(asset)) return res.status(400).json({ error: "Only XAU/XAG" });
-  if (!["bullish","bearish","neutral"].includes(bias)) return res.status(400).json({ error: "Invalid bias" });
-  biasStore[asset] = bias;
-  res.json({ success: true, asset, bias });
-});
-
-app.get("/bias", (req, res) => res.json(biasStore));
-app.post("/chat", async (req, res) => res.json(await handleChat(req.body.asset, req.body.question)));
 
 // ====== Telegram Bot ======
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
 
 bot.onText(/\/start/, msg => {
-  const chatId = msg.chat.id;
-  bot.sendMessage(chatId,
-    `👋 Welcome to *TradeGuide Bot*!\nAsk about BTC, SPX, XAU, XAG for:\n- Market trend\n- Entry strategy\n- Exit strategy\n- Risk management`,
-    { parse_mode: "Markdown" }
+  bot.sendMessage(msg.chat.id,
+    `👋 Welcome to *TradeGuide Bot*\n\nClick below to get your current Bitcoin strategy.`,
+    {
+      reply_markup: {
+        keyboard: [[{ text: "🪙 Bitcoin Strategy" }]],
+        resize_keyboard: true
+      },
+      parse_mode: "Markdown"
+    }
   );
 });
 
 bot.on("message", async msg => {
   const chatId = msg.chat.id;
   const text = msg.text?.trim();
-  if (!text || text.startsWith("/start")) return;
-
-  const asset = ["BTC","SPX","XAU","XAG"].find(a => text.toUpperCase().includes(a));
-  if (!asset) return bot.sendMessage(chatId, "❌ Only BTC, SPX, XAU, XAG supported.");
-  
-  const question = allowedQuestions.find(q => text.toLowerCase().includes(q));
-  if (!question) return bot.sendMessage(chatId, `❌ Allowed questions: ${allowedQuestions.join(", ")}`);
-
-  const result = await handleChat(asset, question);
-  if (result.error) return bot.sendMessage(chatId, `⚠️ Error: ${result.error}`);
-
-  bot.sendMessage(chatId,
-    `📊 *${asset} — ${question}*\n\n` +
-    `💡 *Advice:* ${result.reply.advice || "No advice"}\n` +
-    `🔥 *Confidence Score:* ${result.confidenceScore}\n` +
-    `📈 *Top Probability:* ${result.topProbability}\n` +
-    `⚠️ *Risk Notes:* ${result.reply.risk || "No risk notes"}\n\n` +
-    `_${result.reply.disclaimer || ""}_`,
-    { parse_mode: "Markdown" }
-  );
+  if (text === "🪙 Bitcoin Strategy") {
+    const message = await handleBitcoinStrategy();
+    bot.sendMessage(chatId, message, { parse_mode: "Markdown" });
+  }
 });
 
 // ====== Start Server ======
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Agent + Bot running on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ Bitcoin Strategy Bot running on port ${PORT}`));
