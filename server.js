@@ -55,17 +55,15 @@ async function fetchShortTermRealizedPrice() {
     return parseFloat(sth_realized[sth_realized.length - 1]);
   } catch (err) {
     console.error("Error fetching ShortTermRealizedPrice:", err);
-    return 123000; // fallback
+    return 123000;
   }
 }
 
-// ====== Fetch Market Data (JSON parsing fix) ======
+// ====== Fetch Market Data (JSON parsing) ======
 async function fetchMarketData() {
   try {
     const res = await fetch("https://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
     const text = await res.text();
-
-    // Parse JSON instead of regex
     const data = JSON.parse(text);
 
     const lastSignal = data.Last_signal || "HOLD";
@@ -81,17 +79,14 @@ async function fetchMarketData() {
   }
 }
 
-// ====== Confidence Score (fixed) ======
+// ====== Confidence Score ======
 function calculateConfidenceScore(lastSignal, ratio, slowMA) {
   if (ratio == null || slowMA == null) return 40;
-
-  // Alignment check
   const aligned = (lastSignal === "BUY" && ratio < slowMA) || (lastSignal === "SELL" && ratio > slowMA);
   if (!aligned) return 40;
 
-  // Compute extra confidence only if aligned
   const distance = Math.abs(ratio - slowMA);
-  const normalized = Math.min((distance / slowMA) * 50, 60); // cap at 60
+  const normalized = Math.min((distance / slowMA) * 50, 60);
   return Math.round(40 + normalized);
 }
 
@@ -99,7 +94,6 @@ function calculateConfidenceScore(lastSignal, ratio, slowMA) {
 function calculateTopProbability(price, shortTermRealizedPrice) {
   if (!price || !shortTermRealizedPrice) return 0;
   const ratio = price / shortTermRealizedPrice;
-
   if (ratio < 1) return 0;
   if (ratio >= 1.36) return 90;
   if (ratio >= 1.18) return Math.round(60 + ((ratio - 1.18) / (1.36 - 1.18)) * (90 - 60));
@@ -128,17 +122,29 @@ async function handleBitcoinStrategy() {
 
   message += `\n🔥 *Confidence Score:* ${confidenceScore}%\n📊 *Top Probability:* ${topProbability}%\n`;
   if (topProbability > 50) message += `⚠️ Be cautious — market top could be approaching.\n`;
-  if (topProbability < 50) message += `⚠️ Still low probability of a market top.\n`;
+  else message += `⚠️ Still low probability of a market top.\n`;
 
   message += `\n_Disclaimer: This is not financial advice. Trade responsibly._`;
   return message;
 }
 
-// ====== Telegram Bot ======
-const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+// ====== Telegram Bot (Webhook Mode for Render) ======
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN);
+const WEBHOOK_URL = `https://trading-agent-jcjg.onrender.com/${process.env.TELEGRAM_BOT_TOKEN}`;
 
+// Set webhook
+await bot.setWebHook(WEBHOOK_URL);
+
+// Handle webhook updates
+app.post(`/${process.env.TELEGRAM_BOT_TOKEN}`, async (req, res) => {
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
+});
+
+// ====== Bot Commands ======
 bot.onText(/\/start/, msg => {
-  bot.sendMessage(msg.chat.id,
+  bot.sendMessage(
+    msg.chat.id,
     `👋 Welcome to *TradeGuide Bot*\n\nClick below to get your current Bitcoin strategy.`,
     {
       reply_markup: {
@@ -159,11 +165,9 @@ bot.on("message", async msg => {
   }
 });
 
-// ====== Start Server ======
-const PORT = process.env.PORT || 3000;
-// ====== Health Check Route ======
+// ====== Health Check ======
 app.get("/health", (req, res) => res.send("ok"));
 
-app.listen(PORT, () => console.log(`✅ Bitcoin Strategy Bot running on port ${PORT}`));
-
-
+// ====== Start Server ======
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`✅ Bot running via webhook on port ${PORT}`));
