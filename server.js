@@ -83,12 +83,22 @@ async function fetchMarketData() {
 // ====== Confidence Score (40–100%) ======
 function calculateConfidenceScore(lastSignal, ratio, slowMA) {
   if (ratio == null || slowMA == null) return 40;
-  const distance = Math.abs(ratio - slowMA);
-  let normalized = Math.min((distance / (0.1 * slowMA)) * 100, 100);
-  let score = 40 + normalized * 0.6;
 
-  if ((lastSignal === "BUY" && ratio < slowMA) || (lastSignal === "SELL" && ratio > slowMA)) score = score;
-  else score = 40;
+  const distance = Math.abs(ratio - slowMA);
+
+  // Cap the distance scaling to avoid 100% spikes
+  // Use a factor so typical values give 40–80% rather than 100%
+  let normalized = Math.min((distance / slowMA) * 50, 60); // max normalized = 60
+
+  let score = 40 + normalized; // 40–100% range
+
+  // Adjust for signal alignment
+  if ((lastSignal === "BUY" && ratio < slowMA) || (lastSignal === "SELL" && ratio > slowMA)) {
+    score = score; // good alignment
+  } else {
+    score = 40; // weak alignment
+  }
+
   return Math.round(score);
 }
 
@@ -160,3 +170,4 @@ bot.on("message", async msg => {
 // ====== Start Server ======
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`✅ Bitcoin Strategy Bot running on port ${PORT}`));
+
