@@ -1,153 +1,162 @@
 import express from "express";
 import fetch from "node-fetch";
+import Groq from "groq-sdk";
 import dotenv from "dotenv";
-import TelegramBot from "node-telegram-bot-api";
 import https from "https";
+import TelegramBot from "node-telegram-bot-api";
 
 dotenv.config();
 const app = express();
 app.use(express.json());
 
-// ====== HTTPS agent to ignore SSL issues ======
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-// ====== Telegram Bot Init ======
-const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
-
-// ====== Bias Store ======
-let biasStore = { BTC: "neutral" };
-
-// ====== Fetch Bias from /premium_access ======
-async function fetchBias() {
+// ====== Fetch BTC Bias ======
+async function fetchBias(retries = 3) {
   try {
-    const res = await fetch("http://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
+    const res = await fetch("https://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
     const html = await res.text();
 
-    if (html.toLowerCase().includes("current signal: buy")) biasStore.BTC = "bullish";
-    else if (html.toLowerCase().includes("current signal: sell")) biasStore.BTC = "bearish";
-    else biasStore.BTC = "neutral";
-
-    console.log("✅ Bias updated:", biasStore.BTC);
+    if (html.includes("Current Signal: BUY")) return "bullish";
+    if (html.includes("Current Signal: SELL")) return "bearish";
+    return "neutral";
   } catch (err) {
-    console.error("❌ Error fetching bias:", err.message);
-    biasStore.BTC = "neutral";
+    console.error("Error fetching bias:", err);
+    if (retries > 0) return fetchBias(retries - 1);
+    return "neutral";
   }
 }
 
-setInterval(fetchBias, 60 * 60 * 1000); // refresh hourly
-fetchBias();
+// ====== Fetch ShortTermRealizedPrice ======
+async function fetchShortTermRealizedPrice() {
+  try {
+    const URL = "https://www.bitcoinmagazinepro.com/django_plotly_dash/app/realized_price_sth/_dash-update-component";
+    const HEADERS = {
+      "User-Agent": "Mozilla/5.0",
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+      "Origin": "https://www.bitcoinmagazinepro.com",
+      "Referer": "https://www.bitcoinmagazinepro.com/charts/short-term-holder-realized-price/",
+      "Cookie": process.env.BMP_COOKIE,
+      "X-CSRFToken": process.env.BMP_CSRF
+    };
+    const PAYLOAD = {
+      output: "chart.figure",
+      outputs: { id: "chart", property: "figure" },
+      inputs: [
+        { id: "url", property: "pathname", value: "/charts/short-term-holder-realized-price/" },
+        { id: "display", property: "children", value: "xs 533px" }
+      ],
+      changedPropIds: ["url.pathname", "display.children"]
+    };
+
+    const res = await fetch(URL, { method: "POST", headers: HEADERS, body: JSON.stringify(PAYLOAD) });
+    const data = await res.json();
+    const sth_realized = data.response.chart.figure.data[1].y;
+    return parseFloat(sth_realized[sth_realized.length - 1]);
+  } catch (err) {
+    console.error("Error fetching ShortTermRealizedPrice:", err);
+    return 123000; // fallback
+  }
+}
 
 // ====== Fetch Market Data ======
 async function fetchMarketData() {
   try {
-    const res = await fetch("http://www.swing-trade-crypto.site/data", { agent: httpsAgent });
-    const data = await res.json();
+    const res = await fetch("https://www.swing-trade-crypto.site/premium_access", { agent: httpsAgent });
+    let html = await res.text();
 
-    const lastSignal = data.Last_signal || "HOLD";
-    const ratio = parseFloat(data.Ratio);
-    const slowMA = parseFloat(data.Slow_MA);
-    const price = parseFloat(data.Close);
+    const lastSignal = html.match(/Current Signal:\s*(BUY|SELL|HOLD)/)?.[1] || "HOLD";
+    const ratio = parseFloat(html.match(/Ratio:\s*([\d.]+)/)?.[1] || "0.65");
+    const slowMA = parseFloat(html.match(/Slow_MA:\s*([\d.]+)/)?.[1] || "0.67");
+    const price = parseFloat(html.match(/Price:\s*([\d.]+)/)?.[1] || "123000");
+    const shortTermRealizedPrice = await fetchShortTermRealizedPrice();
 
-    console.log("Market Data:", { lastSignal, ratio, slowMA, price });
-    return { lastSignal, ratio, slowMA, price };
+    return { lastSignal, ratio, slowMA, price, shortTermRealizedPrice };
   } catch (err) {
-    console.error("❌ Error fetching market data:", err.message);
-    return { lastSignal: "HOLD", ratio: 0.65, slowMA: 0.67, price: 123000 };
+    console.error("Error fetching market data:", err);
+    return { lastSignal: "HOLD", ratio: 0.65, slowMA: 0.67, price: 123000, shortTermRealizedPrice: 123000 };
   }
 }
 
-// ====== Confidence Score Calculation ======
+// ====== Confidence Score (40–100%) ======
 function calculateConfidenceScore(lastSignal, ratio, slowMA) {
   if (ratio == null || slowMA == null) return 40;
-
   const distance = Math.abs(ratio - slowMA);
   let normalized = Math.min((distance / (0.1 * slowMA)) * 100, 100);
-  let score = 40 + normalized * 0.6; // Scale 40–100%
+  let score = 40 + normalized * 0.6;
 
-  if ((lastSignal === "BUY" && ratio < slowMA) || (lastSignal === "SELL" && ratio > slowMA)) {
-    score = score; // good alignment
-  } else {
-    score = 40; // weak alignment
-  }
-
+  if ((lastSignal === "BUY" && ratio < slowMA) || (lastSignal === "SELL" && ratio > slowMA)) score = score;
+  else score = 40;
   return Math.round(score);
 }
 
-// ====== Top Probability Calculation ======
-function calculateTopProbability(price, shortTermRealizedPrice = 76000) {
+// ====== Top Probability ======
+function calculateTopProbability(price, shortTermRealizedPrice) {
   if (!price || !shortTermRealizedPrice) return 0;
   const ratio = price / shortTermRealizedPrice;
-
   if (ratio < 1) return 0;
   if (ratio >= 1.36) return 90;
   if (ratio >= 1.18) return Math.round(60 + ((ratio - 1.18) / (1.36 - 1.18)) * (90 - 60));
   return Math.round(10 + ((ratio - 1) / (1.18 - 1)) * 50);
 }
 
-// ====== Handle BTC Strategy ======
+// ====== Handle Bitcoin Strategy ======
 async function handleBitcoinStrategy() {
-  const { lastSignal, ratio, slowMA, price } = await fetchMarketData();
+  const bias = await fetchBias();
+  const { lastSignal, ratio, slowMA, price, shortTermRealizedPrice } = await fetchMarketData();
   const confidenceScore = calculateConfidenceScore(lastSignal, ratio, slowMA);
-  const topProbability = calculateTopProbability(price, 76000);
+  const topProbability = calculateTopProbability(price, shortTermRealizedPrice);
 
-  const bias = biasStore.BTC;
-  let advice = "";
-  let risk = "";
-
+  let message = `💎 *Bitcoin Strategy*\n\n`;
+  
   if (bias === "bullish") {
-    advice = `🟢 *Bias:* Bullish\n💡 *Strategy:* Buy Spot and enter Long position if confidence score > 40%.`;
-
+    message += `📈 *Bias:* Bullish\n💰 *Advice:* Buy Spot and enter Long position if confidence score > 40%\n`;
     if (confidenceScore > 40) {
-      advice += `\n\n📈 *Entry Strategy:* Enter long at current price (${price}).\nKeep Stop Loss at -10% of current price.\nUse maximum leverage of 2x.\nYou can adjust leverage and SL per your risk appetite, but it's advisable to stick to these levels.`;
+      message += `🧭 *Entry Strategy:* Enter long at current price.\nSet Stop Loss at *-10%* of current price and keep leverage max *2x*.\nYou may adjust based on your risk appetite.\n`;
     }
-
-    if (topProbability > 50) risk += `⚠️ *Be cautious as a market top could be approaching.*`;
   } else if (bias === "bearish") {
-    advice = `🔴 *Bias:* Bearish\n💡 *Strategy:* Close all Long Positions. Do *not* Short or Sell Spot BTC.`;
-
-    if (topProbability > 50) risk += `⚠️ *Be cautious as a market top could be approaching.*`;
+    message += `📉 *Bias:* Bearish\n🚫 *Advice:* Close all Long Positions. Don’t Short or Sell Spot BTC.\n`;
   } else {
-    advice = `⚪ *Bias:* Neutral\n💡 *Strategy:* Wait for clearer confirmation before entering any trade.`;
+    message += `⚖️ *Bias:* Neutral\n🤔 Market indecisive — wait for a clearer trend before entering.\n`;
   }
 
-  const disclaimer =
-    "_This advice is for educational purposes only. Trading involves risk. Do your own research before taking any positions._";
+  message += `\n🔥 *Confidence Score:* ${confidenceScore}%\n📊 *Top Probability:* ${topProbability}%\n`;
 
-  return {
-    asset: "BTC",
-    bias,
-    lastSignal,
-    confidenceScore: `${confidenceScore}%`,
-    topProbability: `${topProbability}%`,
-    price,
-    advice,
-    risk,
-    disclaimer
-  };
+  if (topProbability > 50) {
+    message += `⚠️ Be cautious — market top could be approaching.\n`;
+  }
+
+  message += `\n_Disclaimer: This is not financial advice. Trade responsibly._`;
+  return message;
 }
 
-// ====== Express Endpoints ======
-app.get("/", (req, res) => res.send("✅ Bitcoin Strategy Bot Running"));
-app.get("/bias", (req, res) => res.json(biasStore));
-app.get("/bitcoin-strategy", async (req, res) => {
-  const result = await handleBitcoinStrategy();
-  res.json(result);
+// ====== Telegram Bot ======
+const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { polling: true });
+
+bot.onText(/\/start/, msg => {
+  bot.sendMessage(msg.chat.id,
+    `👋 Welcome to *TradeGuide Bot*\n\nClick below to get your current Bitcoin strategy.`,
+    {
+      reply_markup: {
+        keyboard: [[{ text: "🪙 Bitcoin Strategy" }]],
+        resize_keyboard: true
+      },
+      parse_mode: "Markdown"
+    }
+  );
 });
 
-// ====== Telegram Bot ======
-bot.onText(/\/start|\/btc|\/signal/i, async (msg) => {
+bot.on("message", async msg => {
   const chatId = msg.chat.id;
-
-  await bot.sendMessage(chatId, "⏳ Fetching latest Bitcoin data...");
-
-  const result = await handleBitcoinStrategy();
-  await bot.sendMessage(
-    chatId,
-    `📊 *Bitcoin Strategy*\n\n${result.advice}\n\n🔥 *Confidence Score:* ${result.confidenceScore}\n📈 *Top Probability:* ${result.topProbability}\n\n${result.risk}\n\n${result.disclaimer}`,
-    { parse_mode: "Markdown" }
-  );
+  const text = msg.text?.trim();
+  if (text === "🪙 Bitcoin Strategy") {
+    const message = await handleBitcoinStrategy();
+    bot.sendMessage(chatId, message, { parse_mode: "Markdown" });
+  }
 });
 
 // ====== Start Server ======
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Bitcoin Strategy Agent running on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ Bitcoin Strategy Bot running on port ${PORT}`));
